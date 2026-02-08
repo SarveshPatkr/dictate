@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Dictate Pro Overlay - Experiment: Fixed-Size Plasma
-All layers stay the size of the core pearl.
-Voice volume controls the 'length' (percentage) of the plasma whisps.
+Dictate Pro Overlay - Final Siri Plasma Edition
+Design: All layers 80px, fixed size. 
+Voice drives gradient length (10-50%) with independent layer physics (lag).
 """
 
 import sys
@@ -67,24 +67,23 @@ class AudioMonitor:
 class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
-        self.set_title("Dictate Pro - Experimental")
+        self.set_title("Dictate Pro")
         self.set_default_size(100, 100)
         self.set_decorated(False)
         self.set_focusable(False)
         
         self.state = 'recording'
         self.vol_smooth = 0
+        self.layer_smooth = [0.0, 0.0, 0.0] # Individual physics for each color
         self.angles = [random.randint(0, 360) for _ in range(3)]
         self.base_speeds = [0.0] * 3
         self.target_speeds = [0.0] * 3
-        
-        # We now use sound to drive these stops
         self.gradient_stops = [10.0] * 3
         
         self.setup_ui()
         self.monitor = AudioMonitor()
-        
         self.randomize_parameters()
+        
         GLib.timeout_add(30, self.update_ui)
         GLib.timeout_add(800, self.randomize_parameters) 
 
@@ -98,12 +97,17 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.spinner.set_size_request(40, 40)
         self.spinner.set_visible(False)
 
+        BALL_SIZE = 80
+        for w in [self.core, self.red, self.purple, self.blue]:
+            w.set_size_request(BALL_SIZE, BALL_SIZE)
+            w.set_halign(Gtk.Align.CENTER)
+            w.set_valign(Gtk.Align.CENTER)
+
         self.overlay.set_child(self.core)
-        for layer in [self.red, self.purple, self.blue, self.spinner]:
-            layer.set_halign(Gtk.Align.CENTER)
-            layer.set_valign(Gtk.Align.CENTER)
-            self.overlay.add_overlay(layer)
-        
+        self.overlay.add_overlay(self.red)
+        self.overlay.add_overlay(self.purple)
+        self.overlay.add_overlay(self.blue)
+        self.overlay.add_overlay(self.spinner)
         self.set_child(self.overlay)
 
         css_provider = Gtk.CssProvider()
@@ -112,7 +116,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
             #white-core {
                 background: radial-gradient(circle at 30% 30%, #ffffff, #f2f2f7);
                 border-radius: 50%;
-                box-shadow: 0 0 15px rgba(255, 255, 255, 0.4);
+                box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
             }
             #loading-spinner { color: #007aff; }
         """)
@@ -121,7 +125,6 @@ class RecordingOrb(Gtk.ApplicationWindow):
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.dynamic_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     def randomize_parameters(self):
-        # Random speeds/directions
         self.target_speeds = [random.uniform(0.3, 1.2) * random.choice([-1, 1]) for _ in range(3)]
         return True
 
@@ -132,27 +135,29 @@ class RecordingOrb(Gtk.ApplicationWindow):
         vol_active = vol if vol > 0.45 else 0
         self.vol_smooth += (vol_active - self.vol_smooth) * 0.2
         
-        # 1. Spin Logic
         speed_boost = 1.0 + (self.vol_smooth * 10.0)
+        # Individual lags for colors: Red (Fast), Purple (Mid), Blue (Slow)
+        lags = [0.25, 0.12, 0.07]
+
         for i in range(3):
+            # Update individual layer energy
+            self.layer_smooth[i] += (vol_active - self.layer_smooth[i]) * lags[i]
+            
             self.base_speeds[i] += (self.target_speeds[i] - self.base_speeds[i]) * 0.1
             self.angles[i] = (self.angles[i] + (self.base_speeds[i] * speed_boost)) % 360
             
-            # 2. Experimental: Sound controls the LENGTH (Stop %) of the gradient
-            # Map sound (0.0 - 1.0) to (10% - 45%)
-            target_stop = 10.0 + (vol_active * 35.0)
-            self.gradient_stops[i] += (target_stop - self.gradient_stops[i]) * 0.15
+            # Map energy to stop % (10% to 50%)
+            target_stop = 10.0 + (self.layer_smooth[i] * 40.0)
+            self.gradient_stops[i] += (target_stop - self.gradient_stops[i]) * 0.2
 
-        # 3. Fixed Size Logic (All match core)
-        size = int(45 + (self.vol_smooth * 40)) # Pearl still pulses slightly
-        for widget in [self.core, self.red, self.purple, self.blue]:
-            widget.set_size_request(size, size)
+        def get_grad(angle, color_rgba, stop):
+            mid = stop * 0.6
+            return f"linear-gradient({angle}deg, {color_rgba} 0%, {color_rgba.replace('0.8', '0.2')} {mid}%, transparent {stop}%)"
 
-        # 4. CSS Update
         css = f"""
-            #plasma-red {{ background: linear-gradient({self.angles[0]}deg, rgba(255, 59, 48, 0.8) 0%, rgba(255, 59, 48, 0.3) {self.gradient_stops[0]-5}%, transparent {self.gradient_stops[0]}%); border-radius: 50%; filter: blur(1px); }}
-            #plasma-purple {{ background: linear-gradient({self.angles[1]}deg, rgba(175, 82, 222, 0.7) 0%, rgba(175, 82, 222, 0.3) {self.gradient_stops[1]-5}%, transparent {self.gradient_stops[1]}%); border-radius: 50%; filter: blur(2px); }}
-            #plasma-blue {{ background: linear-gradient({self.angles[2]}deg, rgba(0, 122, 255, 0.6) 0%, rgba(0, 122, 255, 0.3) {self.gradient_stops[2]-5}%, transparent {self.gradient_stops[2]}%); border-radius: 50%; filter: blur(3px); }}
+            #plasma-red {{ background: {get_grad(self.angles[0], 'rgba(255, 59, 48, 0.8)', self.gradient_stops[0])}; border-radius: 50%; filter: blur(1px); }}
+            #plasma-purple {{ background: {get_grad(self.angles[1], 'rgba(175, 82, 222, 0.7)', self.gradient_stops[1])}; border-radius: 50%; filter: blur(2px); }}
+            #plasma-blue {{ background: {get_grad(self.angles[2], 'rgba(0, 122, 255, 0.6)', self.gradient_stops[2])}; border-radius: 50%; filter: blur(3px); }}
         """.encode()
         self.dynamic_css.load_from_data(css)
         return True
@@ -166,7 +171,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
 class OrbApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="com.openclaw.dictate.experiment.orb")
+        super().__init__(application_id="com.openclaw.dictate.siri.final.orb")
         self.win = None
     def do_activate(self):
         self.win = RecordingOrb(self)
