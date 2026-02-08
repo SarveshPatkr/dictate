@@ -1,9 +1,7 @@
 #!/bin/bash
-"""
-Dictate Pro
-A system-wide dictation tool for Ubuntu (Wayland).
-Control: Super+T to Start, Space to Stop.
-"""
+# Dictate Pro
+# A system-wide dictation tool for Ubuntu (Wayland).
+# Control: Super+T to Start, Space to Stop.
 
 # 1. Environment & Configuration
 SCRIPT_DIR="$(dirname "$0")"

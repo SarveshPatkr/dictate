@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-Dictate Pro Overlay - Gaussian Plasma Edition v3
+Dictate Pro Overlay - Experimental White Shimmer Edition (REPAIRED)
 - All layers 80px fixed size.
-- EXTREME Gaussian Blur for ultra-soft glow.
-- Randomized Voice Reactivity.
-- Enhanced White Sparkles (more frequent/brighter).
-- 15% Fringe Zone.
+- New 'Ghost Shimmer' white layer with chaotic randomization.
+- Triple-fade Gaussian gradients for ultra-soft glow.
 """
 
 import sys
@@ -48,7 +46,7 @@ class AudioMonitor:
             self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
             self.thread.start()
         except Exception as e:
-            log(f"Mic error: {e}")
+            log(f"Mic initialization error: {e}")
 
     def _monitor_loop(self):
         """Calculates RMS volume from raw audio buffers."""
@@ -76,6 +74,7 @@ class AudioMonitor:
             self.p.terminate()
 
 class RecordingOrb(Gtk.ApplicationWindow):
+    """Main UI window featuring a pulsing orb and transition to a loading spinner."""
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Pro")
@@ -87,15 +86,15 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.vol_smooth = 0
         self.entrance_scale = 0.0
         self.layer_smooth = [0.0, 0.0, 0.0]
-        # Randomized lags for voice reactivity
-        self.lags = [0.25, 0.12, 0.07]
-        self.angles = [random.randint(0, 360) for _ in range(3)]
-        self.base_speeds = [0.0] * 3
-        self.target_speeds = [0.0] * 3
+        
+        # State: 0-2 (Colors), 3 (Border), 4 (White Shimmer)
+        self.angles = [random.randint(0, 360) for _ in range(5)]
+        self.base_speeds = [0.0] * 5
+        self.target_speeds = [0.0] * 5
         self.gradient_stops = [10.0] * 3
         
-        # Sparkle state
-        self.sparkle_chance = [0.0, 0.0, 0.0]
+        # Experimental: Chaotic White Shimmer stops
+        self.white_shimmer_stop = 15.0
         
         self.setup_ui()
         self.monitor = AudioMonitor()
@@ -105,27 +104,26 @@ class RecordingOrb(Gtk.ApplicationWindow):
         GLib.timeout_add(800, self.randomize_parameters) 
 
     def setup_ui(self):
+        """Builds the visual layers using GTK Overlay."""
         self.overlay = Gtk.Overlay()
         self.core = Gtk.Box(name="white-core")
         self.red = Gtk.Box(name="plasma-red")
         self.purple = Gtk.Box(name="plasma-purple")
         self.blue = Gtk.Box(name="plasma-blue")
+        self.white_shimmer = Gtk.Box(name="white-shimmer")
         self.spinner = Gtk.Spinner(name="loading-spinner")
         self.spinner.set_size_request(40, 40)
         self.spinner.set_visible(False)
 
         BALL_SIZE = 80
-        for w in [self.core, self.red, self.purple, self.blue, self.spinner]:
+        for w in [self.core, self.red, self.purple, self.blue, self.white_shimmer, self.spinner]:
             w.set_size_request(BALL_SIZE, BALL_SIZE)
             w.set_halign(Gtk.Align.CENTER)
             w.set_valign(Gtk.Align.CENTER)
 
-        # Stacking order changed: Blue -> Red -> Purple
         self.overlay.set_child(self.core)
-        self.overlay.add_overlay(self.blue)
-        self.overlay.add_overlay(self.red)
-        self.overlay.add_overlay(self.purple)
-        self.overlay.add_overlay(self.spinner)
+        for layer in [self.blue, self.red, self.purple, self.white_shimmer, self.spinner]:
+            self.overlay.add_overlay(layer)
         
         self.set_child(self.overlay)
 
@@ -140,16 +138,13 @@ class RecordingOrb(Gtk.ApplicationWindow):
             #loading-spinner { color: #007aff; }
         """)
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        
         self.dynamic_css = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.dynamic_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     def randomize_parameters(self):
-        # Random speeds
-        self.target_speeds = [random.uniform(0.2, 1.0) * random.choice([-1, 1]) for _ in range(3)]
-        # Randomize which color is most reactive
-        random.shuffle(self.lags)
-        # Higher chance for white sparkles (shimmer)
-        self.sparkle_chance = [random.uniform(0.4, 1.0) for _ in range(3)]
+        self.target_speeds = [random.uniform(0.2, 1.2) * random.choice([-1, 1]) for _ in range(5)]
+        self.white_shimmer_stop = random.uniform(5.0, 35.0)
         return True
 
     def update_ui(self):
@@ -157,7 +152,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
             self.entrance_scale += (1.0 - self.entrance_scale) * 0.15
             if self.entrance_scale > 0.99: self.entrance_scale = 1.0
 
-        BALL_SIZE = int(80 * self.entrance_scale)
+        STRICT_SIZE = int(80 * self.entrance_scale)
         
         if self.state == 'recording':
             vol = self.monitor.current_volume
@@ -165,34 +160,32 @@ class RecordingOrb(Gtk.ApplicationWindow):
             self.vol_smooth += (vol_active - self.vol_smooth) * 0.2
             speed_boost = 1.0 + (self.vol_smooth * 10.0)
             
+            lags = [0.25, 0.12, 0.07]
             for i in range(3):
-                self.layer_smooth[i] += (vol_active - self.layer_smooth[i]) * self.lags[i]
+                self.layer_smooth[i] += (vol_active - self.layer_smooth[i]) * lags[i]
                 self.base_speeds[i] += (self.target_speeds[i] - self.base_speeds[i]) * 0.1
                 self.angles[i] = (self.angles[i] + (self.base_speeds[i] * speed_boost)) % 360
                 
-                # Reduce orange (index 0) reactivity
                 reactivity = 25.0 if i == 0 else 35.0
                 target_stop = 10.0 + (self.layer_smooth[i] * reactivity)
                 self.gradient_stops[i] += (target_stop - self.gradient_stops[i]) * 0.2
+            
+            self.base_speeds[4] += (self.target_speeds[4] - self.base_speeds[4]) * 0.1
+            self.angles[4] = (self.angles[4] + (self.base_speeds[4] * speed_boost * 1.5)) % 360
 
-            for w in [self.core, self.red, self.purple, self.blue]:
-                w.set_size_request(BALL_SIZE, BALL_SIZE)
+            for w in [self.core, self.red, self.purple, self.blue, self.white_shimmer]:
+                w.set_size_request(STRICT_SIZE, STRICT_SIZE)
 
-            def get_grad(angle, color_rgba, stop, idx):
-                fringe_color = color_rgba.replace(', 0.7', ', 0.1').replace(', 0.6', ', 0.1').replace(', 0.5', ', 0.05').replace('0.8', '0.1')
-                fringe_stop = stop + 15.0
-                
-                sparkle = ""
-                if self.sparkle_chance[idx] > 0.55:
-                    sparkle = "rgba(255,255,255,1.0) 0%, rgba(255,255,255,0.5) 10%, rgba(255,255,255,0) 20%,"
-
-                return f"linear-gradient({angle}deg, {sparkle} {color_rgba} 0%, {color_rgba} {stop}%, {fringe_color} {stop}%, {fringe_color} {fringe_stop}%, transparent {fringe_stop}%)"
+            def get_grad(angle, color_rgba, stop):
+                f_stop = stop + 12.0
+                f_color = color_rgba.replace(', 0.', ', 0.').replace('0.8', '0.1').replace('0.7', '0.1').replace('0.6', '0.05')
+                return f"linear-gradient({angle}deg, {color_rgba} 0%, {color_rgba} {stop}%, {f_color} {stop}%, {f_color} {f_stop}%, transparent {f_stop}%)"
 
             css = f"""
-                window {{ background-color: transparent; }}
-                #plasma-red {{ background: {get_grad(self.angles[0], 'rgba(255, 59, 48, 0.8)', self.gradient_stops[0], 0)}; border-radius: 50%; filter: blur(6px); }}
-                #plasma-purple {{ background: {get_grad(self.angles[1], 'rgba(175, 82, 222, 0.7)', self.gradient_stops[1], 1)}; border-radius: 50%; filter: blur(10px); }}
-                #plasma-blue {{ background: {get_grad(self.angles[2], 'rgba(0, 122, 255, 0.6)', self.gradient_stops[2], 2)}; border-radius: 50%; filter: blur(14px); }}
+                #plasma-red {{ background: {get_grad(self.angles[0], 'rgba(255, 59, 48, 0.7)', self.gradient_stops[0])}; border-radius: 50%; filter: blur(6px); }}
+                #plasma-purple {{ background: {get_grad(self.angles[1], 'rgba(175, 82, 222, 0.6)', self.gradient_stops[1])}; border-radius: 50%; filter: blur(10px); }}
+                #plasma-blue {{ background: {get_grad(self.angles[2], 'rgba(0, 122, 255, 0.5)', self.gradient_stops[2])}; border-radius: 50%; filter: blur(14px); }}
+                #white-shimmer {{ background: linear-gradient({self.angles[4]}deg, rgba(255,255,255,0.8) 0%, transparent {self.white_shimmer_stop}%); border-radius: 50%; opacity: 0.6; filter: blur(4px); }}
             """.encode()
             self.dynamic_css.load_from_data(css)
             
@@ -201,13 +194,13 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def start_loading(self):
         self.state = 'loading'
         self.monitor.stop()
-        for w in [self.red, self.purple, self.blue, self.core]: w.set_visible(False)
+        for w in [self.red, self.purple, self.blue, self.core, self.white_shimmer]: w.set_visible(False)
         self.spinner.set_visible(True)
         self.spinner.start()
 
 class OrbApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="com.openclaw.dictate.gaussian.v3.zindex.orb")
+        super().__init__(application_id="com.openclaw.dictate.master.v6.orb")
         self.win = None
     def do_activate(self):
         self.win = RecordingOrb(self)
