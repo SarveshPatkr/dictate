@@ -15,8 +15,11 @@ Press a hotkey to record, press again to transcribe (via Groq Whisper) and copy 
     The script checks for a "lock file" (`/tmp/dictate_recording.pid`).
     *   *File exists?* -> We are recording. **Stop** the process.
     *   *File missing?* -> We are idle. **Start** recording.
+
+2.  **Visual Feedback (The "Orb"):**
+    When recording starts, we launch a `zenity` dialog (a small floating window with a pulsating bar) to indicate the "Listening" state. This provides clear visual confirmation on screen.
     
-2.  **Graceful Audio Handling:**
+3.  **Graceful Audio Handling:**
     Instead of abruptly killing the recording (which corrupts WAV files), we send a `SIGTERM` signal. This tells `arecord` to finish writing the file headers properly before quitting, preventing "Unexpected EOF" errors.
 
 3.  **Wayland Integration:**

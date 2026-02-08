@@ -15,6 +15,7 @@ fi
 
 API_KEY="$GROQ_API_KEY"
 LOCK_FILE="/tmp/dictate_recording.pid"
+GUI_FILE="/tmp/dictate_gui.pid"
 AUDIO_FILE="/tmp/dictate_audio.wav"
 DEBUG_LOG="/tmp/dictate_debug.log"
 
@@ -29,10 +30,23 @@ if ! command -v wl-copy &> /dev/null; then
     exit 1
 fi
 
+# Check for Zenity (Optional but recommended for UI)
+HAS_ZENITY=false
+if command -v zenity &> /dev/null; then
+    HAS_ZENITY=true
+fi
+
 if [ -f "$LOCK_FILE" ]; then
     # --- STOP RECORDING & TRANSCRIBE ---
     
-    # 1. Kill the recording process nicely (SIGTERM allows arecord to fix WAV header)
+    # 1. Kill the GUI indicator first
+    if [ -f "$GUI_FILE" ]; then
+        GUI_PID=$(cat "$GUI_FILE")
+        kill "$GUI_PID" 2>/dev/null
+        rm "$GUI_FILE"
+    fi
+
+    # 2. Kill the recording process nicely (SIGTERM allows arecord to fix WAV header)
     PID=$(cat "$LOCK_FILE")
     if ps -p $PID > /dev/null; then
         kill -TERM $PID
@@ -55,7 +69,7 @@ if [ -f "$LOCK_FILE" ]; then
 
     log "Sending audio to Groq (Size: $(du -h $AUDIO_FILE))"
 
-    # 2. Send to Groq API (Whisper)
+    # 3. Send to Groq API (Whisper)
     # Note: Groq Whisper accepts m4a/mp3/wav. We send wav directly.
     RESPONSE=$(curl -s -X POST "https://api.groq.com/openai/v1/audio/transcriptions" \
       -H "Authorization: Bearer $API_KEY" \
@@ -66,10 +80,10 @@ if [ -f "$LOCK_FILE" ]; then
     
     log "Response: $RESPONSE"
 
-    # 3. Extract text
+    # 4. Extract text
     TEXT=$(echo "$RESPONSE" | jq -r '.text')
 
-    # 4. Handle result
+    # 5. Handle result
     if [ "$TEXT" != "null" ] && [ -n "$TEXT" ]; then
         # Copy to clipboard (Wayland)
         echo -n "$TEXT" | wl-copy
@@ -92,6 +106,20 @@ else
     arecord -D default -f S16_LE -c 1 -r 16000 -d 120 "$AUDIO_FILE" -q &
     echo $! > "$LOCK_FILE"
     
-    notify-send -t 0 "Dictate" "🎙️ Listening... (Press again to stop)"
+    # Launch GUI Indicator if available
+    if [ "$HAS_ZENITY" = true ]; then
+        zenity --progress --pulsate \
+               --title="🎙️ Dictating" \
+               --text="Listening..." \
+               --percentage=0 \
+               --auto-close \
+               --no-cancel \
+               --width=300 \
+               2>/dev/null &
+        echo $! > "$GUI_FILE"
+    else
+        notify-send -t 0 "Dictate" "🎙️ Listening... (Press again to stop)"
+    fi
+    
     log "Started recording to $AUDIO_FILE"
 fi
