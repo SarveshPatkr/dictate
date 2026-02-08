@@ -55,7 +55,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Pro")
-        self.set_default_size(300, 300)
+        self.set_default_size(180, 180)
         self.set_decorated(False)
         self.set_focusable(False)
         
@@ -107,13 +107,13 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
         self.monitor = AudioMonitor()
         GLib.timeout_add(30, self.update_ui)
-        GLib.timeout_add(1000, self.randomize_parameters) 
+        GLib.timeout_add(500, self.randomize_parameters) 
 
     def randomize_parameters(self):
         # Calm random drift
         self.target_speeds = [random.uniform(0.3, 1.5) * random.choice([-1, 1]) for _ in range(3)]
-        # Randomize "Length" of each plasma whisp (10% to 55%)
-        self.target_stops = [random.uniform(10.0, 55.0) for _ in range(3)]
+        # Randomize "Length" of each plasma whisp (20% to 55%)
+        self.target_stops = [random.uniform(20.0, 55.0) for _ in range(3)]
         return True
 
     def update_ui(self):
@@ -126,9 +126,9 @@ class RecordingOrb(Gtk.ApplicationWindow):
             speed_boost = 1.0 + (self.vol_smooth * 10.0)
             for i in range(3):
                 # Smoothly shift speeds and whisp lengths
-                self.base_speeds[i] += (self.target_speeds[i] - self.base_speeds[i]) * 0.08
+                self.base_speeds[i] += (self.target_speeds[i] - self.base_speeds[i]) * 0.15
                 self.angles[i] = (self.angles[i] + (self.base_speeds[i] * speed_boost)) % 360
-                self.gradient_stops[i] += (self.target_stops[i] - self.gradient_stops[i]) * 0.08
+                self.gradient_stops[i] += (self.target_stops[i] - self.gradient_stops[i]) * 0.15
             
             # Size Pulsing
             s_core = int(85 + (self.vol_smooth * 55))
