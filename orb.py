@@ -32,7 +32,7 @@ class AudioMonitor:
         while self.running and self.p:
             try:
                 data = self.stream.read(1024, exception_on_overflow=False)
-                shorts = struct.unpack(f"{len(data)//2}h", data)
+                shorts = struct.unpack(f\"{len(data)//2}h\", data)
                 sum_squares = sum(s*s for s in shorts)
                 rms = math.sqrt(sum_squares / (len(shorts) or 1))
                 level = math.log(rms + 1, 10) / 4.5 if rms > 0 else 0
@@ -54,127 +54,141 @@ class AudioMonitor:
 class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
-        self.set_title("Dictate Overlay")
-        self.set_default_size(250, 250)
+        self.set_title(\"Dictate Overlay\")
+        self.set_default_size(300, 300)
         self.set_decorated(False)
         self.set_focusable(False)
         
         self.state = 'recording'
         self.vol_smooth = 0
+        self.angle = 0
         
-        # UI Structure
+        # We'll use 5 layers to create the \"Plasma Wave\" look from your screenshot
         self.overlay = Gtk.Overlay()
         
-        # Layer 1: Blue Wave (Back)
-        self.blob_blue = Gtk.Box()
-        self.blob_blue.add_css_class("blob-blue")
-        self.blob_blue.set_halign(Gtk.Align.CENTER)
-        self.blob_blue.set_valign(Gtk.Align.CENTER)
+        # Layer 1: Deep Blue Aura
+        self.aura = Gtk.Box()
+        self.aura.add_css_class(\"plasma-aura\")
         
-        # Layer 2: Red Wave (Middle)
-        self.blob_red = Gtk.Box()
-        self.blob_red.add_css_class("blob-red")
-        self.blob_red.set_halign(Gtk.Align.CENTER)
-        self.blob_red.set_valign(Gtk.Align.CENTER)
+        # Layer 2: Purple Wave
+        self.wave_purple = Gtk.Box()
+        self.wave_purple.add_css_class(\"wave-purple\")
         
-        # Layer 3: White Core (Front)
+        # Layer 3: Cyan/Blue Wave
+        self.wave_cyan = Gtk.Box()
+        self.wave_cyan.add_css_class(\"wave-cyan\")
+        
+        # Layer 4: Red/Magenta Wave
+        self.wave_red = Gtk.Box()
+        self.wave_red.add_css_class(\"wave-red\")
+        
+        # Layer 5: The White Pearl Core
         self.core = Gtk.Box()
-        self.core.add_css_class("white-core")
-        self.core.set_halign(Gtk.Align.CENTER)
-        self.core.set_valign(Gtk.Align.CENTER)
-        self.core.set_size_request(50, 50)
+        self.core.add_css_class(\"core-white\")
+        self.core.set_size_request(45, 45)
         
         # Spinner
         self.spinner = Gtk.Spinner()
         self.spinner.set_size_request(60, 60)
-        self.spinner.set_halign(Gtk.Align.CENTER)
-        self.spinner.set_valign(Gtk.Align.CENTER)
         self.spinner.set_visible(False)
 
-        self.overlay.set_child(self.blob_blue)
-        self.overlay.add_overlay(self.blob_red)
-        self.overlay.add_overlay(self.core)
-        self.overlay.add_overlay(self.spinner)
+        # Build the stack
+        for w in [self.aura, self.wave_purple, self.wave_cyan, self.wave_red, self.core, self.spinner]:
+            w.set_halign(Gtk.Align.CENTER)
+            w.set_valign(Gtk.Align.CENTER)
+            if w == self.aura:
+                self.overlay.set_child(w)
+            else:
+                self.overlay.add_overlay(w)
+        
         self.set_child(self.overlay)
 
-        # CSS for REAL WAVES
-        css_provider = Gtk.CssProvider()
-        css_provider.load_from_data(b"""
-            window { background-color: transparent; }
-            
-            .white-core {
-                background: radial-gradient(circle at 30% 30%, #ffffff, #f2f2f7);
-                border-radius: 50%;
-                box-shadow: 0 0 15px rgba(255, 255, 255, 0.9);
-                z-index: 10;
-            }
-
-            .blob-red {
-                background: repeating-conic-gradient(from 0deg, #ff3b30 0%, #ff9500 15%, #ff3b30 30%);
-                opacity: 0.8;
-                border-radius: 50%;
-                box-shadow: 0 0 10px rgba(255, 59, 48, 0.4);
-                transition: all 0.1s ease-out;
-            }
-
-            .blob-blue {
-                background: repeating-conic-gradient(from 0deg, #007aff 0%, #5856d6 15%, #007aff 30%);
-                opacity: 0.6;
-                border-radius: 50%;
-                box-shadow: 0 0 10px rgba(0, 122, 255, 0.3);
-                transition: all 0.15s ease-out;
-            }
-
-            .spinner { color: #007aff; }
-        """)
-        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        # --- THE PLASMA CSS ENGINE ---
+        self.css_provider = Gtk.CssProvider()
+        self.apply_plasma_css()
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.monitor = AudioMonitor()
-        self.angle = 0
         GLib.timeout_add(30, self.update_ui)
+
+    def apply_plasma_css(self, brs=None):
+        brs = brs or [\"50% \"] * 4
+        css = f\"\"\"
+            window {{ background-color: transparent; }}
+            .plasma-aura {{
+                background: radial-gradient(circle, rgba(0, 122, 255, 0.3), transparent 70%);
+                min-width: 220px; min-height: 220px;
+                border-radius: 50%;
+            }}
+            .wave-purple {{
+                background: linear-gradient(45deg, rgba(88, 86, 214, 0.6), rgba(175, 82, 222, 0.4));
+                min-width: 160px; min-height: 160px;
+                border-radius: {brs[0]};
+                filter: blur(8px);
+            }}
+            .wave-cyan {{
+                background: linear-gradient(-45deg, rgba(90, 200, 250, 0.7), rgba(0, 122, 255, 0.3));
+                min-width: 140px; min-height: 140px;
+                border-radius: {brs[1]};
+                filter: blur(5px);
+            }}
+            .wave-red {{
+                background: linear-gradient(180deg, rgba(255, 59, 48, 0.8), rgba(255, 149, 0, 0.4));
+                min-width: 110px; min-height: 110px;
+                border-radius: {brs[2]};
+                filter: blur(3px);
+            }}
+            .core-white {{
+                background: radial-gradient(circle at 30% 30%, #ffffff, #f2f2f7);
+                border-radius: 50%;
+                box-shadow: 0 0 20px rgba(255, 255, 255, 0.9), inset 0 0 5px rgba(0,0,0,0.1);
+            }}
+            .spinner {{ color: #007aff; }}
+        \"\"\".encode()
+        self.css_provider.load_from_data(css)
 
     def update_ui(self):
         if self.state == 'recording':
             vol = self.monitor.get_volume()
             vol = vol if vol > 0.45 else 0
-            self.vol_smooth += (vol - self.vol_smooth) * 0.3
-            self.angle += 0.1
+            self.vol_smooth += (vol - self.vol_smooth) * 0.2
+            self.angle += 0.15
             
-            # --- THE "WAVE" LOGIC ---
-            # To simulate waves wrapping around, we create high-frequency size changes
-            # coupled with tight radius gaps.
+            # Generate random \"Wavy\" border radii for that plasma texture
+            def get_br(seed_offset):
+                a = self.angle + seed_offset
+                v = self.vol_smooth * 30
+                r1 = int(40 + v + math.sin(a) * 15)
+                r2 = int(60 + v + math.cos(a*1.2) * 15)
+                r3 = int(50 + v + math.sin(a*0.8) * 20)
+                r4 = int(45 + v + math.cos(a*1.5) * 10)
+                return f\"{r1}% {r2}% {r3}% {r4}% / {r4}% {r3}% {r2}% {r1}%\"
+
+            # Update the waves morphing
+            self.apply_plasma_css([get_br(0), get_br(2), get_br(4)])
             
-            # 1. White Core (Steady Pulse)
-            core_size = int(50 + (self.vol_smooth * 20))
-            self.core.set_size_request(core_size, core_size)
+            # Scale Core
+            c_size = int(45 + (self.vol_smooth * 25))
+            self.core.set_size_request(c_size, c_size)
             
-            # 2. Tighten Gaps (Per user request)
-            # Core: 50, Red: 58+, Blue: 68+
-            
-            # Red Wave: Vibrates and wraps
-            red_wave = math.sin(time.time() * 20) * (5 + self.vol_smooth * 40)
-            red_size = int(58 + (self.vol_smooth * 60) + red_wave)
-            self.blob_red.set_size_request(red_size, red_size)
-            
-            # Blue Wave: Slower vibration
-            blue_wave = math.cos(time.time() * 15) * (8 + self.vol_smooth * 50)
-            blue_size = int(68 + (self.vol_smooth * 80) + blue_wave)
-            self.blob_blue.set_size_request(blue_size, blue_size)
+            # Scale Waves
+            self.wave_purple.set_size_request(int(160 + vol*100), int(160 + vol*100))
+            self.wave_cyan.set_size_request(int(140 + vol*80), int(140 + vol*80))
+            self.wave_red.set_size_request(int(110 + vol*60), int(110 + vol*60))
             
         return True
 
     def start_loading(self):
         self.state = 'loading'
         self.monitor.stop()
-        self.blob_blue.set_visible(False)
-        self.blob_red.set_visible(False)
-        self.core.set_visible(False)
+        for w in [self.aura, self.wave_purple, self.wave_cyan, self.wave_red, self.core]:
+            w.set_visible(False)
         self.spinner.set_visible(True)
         self.spinner.start()
 
 class OrbApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="com.openclaw.dictate.waves.pro.orb")
+        super().__init__(application_id=\"com.openclaw.dictate.plasma.orb\")
         self.win = None
 
     def do_activate(self):
@@ -192,6 +206,6 @@ class OrbApp(Gtk.Application):
         self.quit()
         return False
 
-if __name__ == "__main__":
+if __name__ == \"__main__\":
     app = OrbApp()
     app.run(None)
