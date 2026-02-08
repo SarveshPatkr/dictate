@@ -11,6 +11,12 @@ import time
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk, Gdk, GLib
 
+LOG_FILE = "/tmp/dictate_debug.log"
+
+def log(msg):
+    with open(LOG_FILE, "a") as f:
+        f.write(f"{time.ctime()}: [Orb] {msg}\n")
+
 class AudioMonitor:
     def __init__(self):
         try:
@@ -51,37 +57,29 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Overlay")
-        self.set_default_size(80, 80)
+        self.set_default_size(150, 150)
         self.set_decorated(False)
         self.set_focusable(False)
         
-        # UI Stack to switch between Orb and Spinner
-        self.stack = Gtk.Stack()
-        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        self.stack.set_transition_duration(300)
+        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.main_box.set_halign(Gtk.Align.CENTER)
+        self.main_box.set_valign(Gtk.Align.CENTER)
         
         # 1. THE RED ORB
-        self.orb_box = Gtk.Box()
-        self.orb_box.set_halign(Gtk.Align.CENTER)
-        self.orb_box.set_valign(Gtk.Align.CENTER)
         self.orb = Gtk.Box()
         self.orb.add_css_class("red-orb")
         self.orb.set_size_request(40, 40)
-        self.orb_box.append(self.orb)
         
-        # 2. THE SPINNER
-        self.spinner_box = Gtk.Box()
-        self.spinner_box.set_halign(Gtk.Align.CENTER)
-        self.spinner_box.set_valign(Gtk.Align.CENTER)
+        # 2. THE SPINNER (hidden initially)
         self.spinner = Gtk.Spinner()
         self.spinner.set_size_request(40, 40)
-        self.spinner_box.append(self.spinner)
+        self.spinner.set_visible(False)
         
-        self.stack.add_named(self.orb_box, "orb")
-        self.stack.add_named(self.spinner_box, "spinner")
-        self.set_child(self.stack)
+        self.main_box.append(self.orb)
+        self.main_box.append(self.spinner)
+        self.set_child(self.main_box)
 
-        # CSS for Red Orb
+        # CSS
         css_provider = Gtk.CssProvider()
         css_provider.load_from_data(b"""
             window { background-color: transparent; }
@@ -98,19 +96,23 @@ class RecordingOrb(Gtk.ApplicationWindow):
         )
 
         self.monitor = AudioMonitor()
-        GLib.timeout_add(30, self.update_orb)
+        self.loading = False
+        GLib.timeout_add(30, self.update_ui)
 
-    def update_orb(self):
-        if self.stack.get_visible_child_name() == "orb":
+    def update_ui(self):
+        if not self.loading:
             vol = self.monitor.get_volume()
-            scale = 1.0 + (vol * 1.0) if vol > 0.45 else 1.0
+            scale = 1.0 + (vol * 1.5) if vol > 0.45 else 1.0
             size = int(40 * scale)
             self.orb.set_size_request(size, size)
         return True
 
     def start_loading(self):
+        log("start_loading called")
+        self.loading = True
         self.monitor.stop()
-        self.stack.set_visible_child_name("spinner")
+        self.orb.set_visible(False)
+        self.spinner.set_visible(True)
         self.spinner.start()
 
 class OrbApp(Gtk.Application):
@@ -125,7 +127,9 @@ class OrbApp(Gtk.Application):
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_sigterm)
 
     def on_sigusr1(self):
-        if self.win: self.win.start_loading()
+        log("SIGUSR1 received in App")
+        if self.win:
+            GLib.idle_add(self.win.start_loading)
         return True
 
     def on_sigterm(self):
