@@ -91,6 +91,10 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.target_speeds = [0.0] * 3
         self.gradient_stops = [30.0] * 3
         self.target_stops = [30.0] * 3
+        
+        # Randomized expansion multipliers for each layer
+        self.exp_multipliers = [1.0, 1.0, 1.0]
+        self.target_multipliers = [1.0, 1.0, 1.0]
 
         self.setup_ui()
         self.monitor = AudioMonitor()
@@ -98,7 +102,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
         # Initialize randomization and begin animation loops
         self.randomize_parameters()
         GLib.timeout_add(30, self.update_ui)
-        GLib.timeout_add(800, self.randomize_parameters) 
+        GLib.timeout_add(500, self.randomize_parameters) 
 
     def setup_ui(self):
         """Builds the visual layers using GTK Overlay."""
@@ -138,9 +142,11 @@ class RecordingOrb(Gtk.ApplicationWindow):
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.dynamic_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     def randomize_parameters(self):
-        """Periodically updates target speeds and gradient lengths for an organic feel."""
+        """Periodically updates target speeds, gradient lengths, and expansion intensities."""
         self.target_speeds = [random.uniform(0.3, 1.5) * random.choice([-1, 1]) for _ in range(3)]
         self.target_stops = [random.uniform(10.0, 50.0) for _ in range(3)]
+        # Randomize how much each layer reacts to voice (from 0.5x to 2.0x intensity)
+        self.target_multipliers = [random.uniform(0.5, 2.0) for _ in range(3)]
         return True
 
     def update_ui(self):
@@ -152,18 +158,26 @@ class RecordingOrb(Gtk.ApplicationWindow):
         vol_active = vol if vol > 0.45 else 0
         self.vol_smooth += (vol_active - self.vol_smooth) * 0.2
         
-        # Calculate physics: Speed boost based on voice activity
+        # Calculate physics: Speed boost and interpolation
         speed_boost = 1.0 + (self.vol_smooth * 10.0)
         for i in range(3):
-            self.base_speeds[i] += (self.target_speeds[i] - self.base_speeds[i]) * 0.1
+            self.base_speeds[i] += (self.target_speeds[i] - self.base_speeds[i]) * 0.15
             self.angles[i] = (self.angles[i] + (self.base_speeds[i] * speed_boost)) % 360
-            self.gradient_stops[i] += (self.target_stops[i] - self.gradient_stops[i]) * 0.1
+            self.gradient_stops[i] += (self.target_stops[i] - self.gradient_stops[i]) * 0.15
+            self.exp_multipliers[i] += (self.target_multipliers[i] - self.exp_multipliers[i]) * 0.1
         
-        # Update sizes: Base 45px, expands to 85px
-        size = int(45 + (self.vol_smooth * 40))
-        for widget in [self.core, self.red, self.purple]:
-            widget.set_size_request(size, size)
-        self.blue.set_size_request(size + 1, size + 1)
+        # Update sizes: Pearl is base, colors have randomized expansion intensity
+        base_size = int(45 + (self.vol_smooth * 40))
+        self.core.set_size_request(base_size, base_size)
+        
+        # Individual layer expansion (Base + Randomized Voice Reaction)
+        s_red = int(45 + (self.vol_smooth * 40 * self.exp_multipliers[0]))
+        s_purple = int(45 + (self.vol_smooth * 40 * self.exp_multipliers[1]))
+        s_blue = int(45 + (self.vol_smooth * 40 * self.exp_multipliers[2])) + 1
+        
+        self.red.set_size_request(s_red, s_red)
+        self.purple.set_size_request(s_purple, s_purple)
+        self.blue.set_size_request(s_blue, s_blue)
 
         # Update dynamic gradients
         css = f"""
