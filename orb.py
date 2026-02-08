@@ -7,9 +7,17 @@ import struct
 import threading
 import pyaudio
 import time
+import cairo
+import random
 
-gi.require_version('Gtk', '4.0')
+gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, Gdk, GLib
+
+LOG_FILE = "/tmp/dictate_debug.log"
+
+def log(msg):
+    with open(LOG_FILE, "a") as f:
+        f.write(f"{time.ctime()}: [WaveOrb] {msg}\n")
 
 class AudioMonitor:
     def __init__(self):
@@ -50,149 +58,126 @@ class AudioMonitor:
                 self.p.terminate()
             except: pass
 
-class RecordingOrb(Gtk.ApplicationWindow):
-    def __init__(self, app):
-        super().__init__(application=app)
+class RecordingOrb(Gtk.Window):
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
         self.set_title("Dictate Overlay")
         self.set_default_size(250, 250)
+        self.set_app_paintable(True)
         self.set_decorated(False)
-        self.set_focusable(False)
+        self.set_keep_above(True)
+        self.set_skip_taskbar_hint(True)
         
+        # Transparent background for GTK3
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual and screen.is_composited():
+            self.set_visual(visual)
+
         self.state = 'recording'
         self.angle = 0
         self.vol_smooth = 0
         
-        # Overlay for stacking layers
-        self.overlay = Gtk.Overlay()
-        
-        # Layer 1: The Blue Wave (Bottom)
-        self.wave_blue = Gtk.Box()
-        self.wave_blue.add_css_class("wave-blue")
-        self.wave_blue.set_halign(Gtk.Align.CENTER)
-        self.wave_blue.set_valign(Gtk.Align.CENTER)
-        
-        # Layer 2: The Red Wave (Middle)
-        self.wave_red = Gtk.Box()
-        self.wave_red.add_css_class("wave-red")
-        self.wave_red.set_halign(Gtk.Align.CENTER)
-        self.wave_red.set_valign(Gtk.Align.CENTER)
-        
-        # Layer 3: The White Core (Top)
-        self.core = Gtk.Box()
-        self.core.add_css_class("core-white")
-        self.core.set_halign(Gtk.Align.CENTER)
-        self.core.set_valign(Gtk.Align.CENTER)
-        
-        # Spinner
-        self.spinner = Gtk.Spinner()
-        self.spinner.add_css_class("spinner")
-        self.spinner.set_size_request(60, 60)
-        self.spinner.set_halign(Gtk.Align.CENTER)
-        self.spinner.set_valign(Gtk.Align.CENTER)
-        self.spinner.set_visible(False)
+        # Wave particles
+        self.waves = [] # Each wave: [radius, color, alpha, speed]
 
-        self.overlay.set_child(self.wave_blue)
-        self.overlay.add_overlay(self.wave_red)
-        self.overlay.add_overlay(self.core)
-        self.overlay.add_overlay(self.spinner)
-        self.set_child(self.overlay)
-
-        # CSS for the "Fluid Blob" effect
-        css_provider = Gtk.CssProvider()
-        css_provider.load_from_data(b"""
-            window { background-color: transparent; }
-            .wave-blue {
-                background: radial-gradient(circle, #007aff 0%, rgba(0, 122, 255, 0) 70%);
-                border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
-                min-width: 140px; min-height: 140px;
-                opacity: 0.6;
-                transition: all 0.3s ease-out;
-            }
-            .wave-red {
-                background: radial-gradient(circle, #ff3b30 0%, rgba(255, 59, 48, 0) 70%);
-                border-radius: 60% 40% 30% 70% / 50% 60% 40% 60%;
-                min-width: 120px; min-height: 120px;
-                opacity: 0.7;
-                transition: all 0.2s ease-out;
-            }
-            .core-white {
-                background: radial-gradient(circle at 30% 30%, #ffffff 0%, #f2f2f7 100%);
-                border-radius: 50%;
-                min-width: 40px; min-height: 40px;
-                box-shadow: 0 0 20px rgba(255, 255, 255, 0.8),
-                            inset 0 0 10px rgba(0, 0, 0, 0.1);
-                transition: all 0.1s ease-out;
-            }
-            .spinner { color: #007aff; }
-        """)
-        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.area = Gtk.DrawingArea()
+        self.area.connect("draw", self.on_draw)
+        self.add(self.area)
 
         self.monitor = AudioMonitor()
-        GLib.timeout_add(30, self.update_ui)
+        GLib.timeout_add(20, self.tick)
 
-    def update_ui(self):
+    def on_draw(self, area, cr):
+        width = area.get_allocated_width()
+        height = area.get_allocated_height()
+        cx, cy = width / 2, height / 2
+        
+        # Clear
+        cr.set_source_rgba(0, 0, 0, 0)
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+
+        if self.state == 'recording':
+            # 1. DRAW WAVES (Expanding Rings)
+            for wave in self.waves[:]:
+                radius, color, alpha, speed = wave
+                cr.set_line_width(2)
+                if color == 'red':
+                    cr.set_source_rgba(1.0, 0.23, 0.18, alpha)
+                else:
+                    cr.set_source_rgba(0.0, 0.48, 1.0, alpha)
+                
+                cr.arc(cx, cy, radius, 0, 2 * math.pi)
+                cr.stroke()
+                
+                # Update wave
+                wave[0] += speed
+                wave[2] -= 0.02 # Fade out
+                if wave[2] <= 0:
+                    self.waves.remove(wave)
+
+            # 2. DRAW WHITE CORE
+            radius = 20 + (self.vol_smooth * 15)
+            # Subtle shadow
+            cr.set_source_rgba(0, 0, 0, 0.1)
+            cr.arc(cx, cy, radius + 2, 0, 2 * math.pi)
+            cr.fill()
+            # Main white ball
+            cr.set_source_rgba(1.0, 1.0, 1.0, 1.0)
+            cr.arc(cx, cy, radius, 0, 2 * math.pi)
+            cr.fill()
+            
+        else:
+            # SIRI SPINNER
+            radius = 25
+            cr.set_line_width(4)
+            cr.set_source_rgba(0.0, 0.48, 1.0, 0.2)
+            cr.arc(cx, cy, radius, 0, 2 * math.pi)
+            cr.stroke()
+            
+            cr.set_source_rgba(0.0, 0.48, 1.0, 1.0)
+            cr.arc(cx, cy, radius, self.angle, self.angle + (math.pi * 0.7))
+            cr.stroke()
+
+    def tick(self):
         if self.state == 'recording':
             vol = self.monitor.get_volume()
-            # Noise gate
-            vol = vol if vol > 0.48 else 0
-            # Smoothing
-            self.vol_smooth += (vol - self.vol_smooth) * 0.3
+            # Noise gate 0.45
+            vol = vol if vol > 0.45 else 0
+            self.vol_smooth += (vol - self.vol_smooth) * 0.2
             
-            # Animation Logic
-            self.angle += 0.1
+            # Spawn new waves based on sound
+            if vol > 0.5:
+                # Spawn red or blue wave
+                color = 'red' if random.random() > 0.5 else 'blue'
+                # [radius, color, alpha, speed]
+                self.waves.append([20, color, 0.8, 2.0 + (vol * 3.0)])
             
-            # 1. Update Core (White)
-            core_size = int(40 + (self.vol_smooth * 30))
-            self.core.set_size_request(core_size, core_size)
-            
-            # 2. Update Waves (Fluid morphing)
-            # We change the border-radius dynamically to simulate "waves"
-            r1 = int(40 + math.sin(self.angle) * 10)
-            r2 = int(60 + math.cos(self.angle) * 15)
-            r3 = int(50 + math.sin(self.angle * 0.5) * 20)
-            
-            # Use size to simulate growth
-            red_size = int(120 + (self.vol_smooth * 100))
-            blue_size = int(140 + (self.vol_smooth * 120))
-            
-            self.wave_red.set_size_request(red_size, red_size)
-            self.wave_blue.set_size_request(blue_size, blue_size)
-            
-            # Apply dynamic rotation/wobble via CSS (minimal impact)
-            # Since updating CSS data every frame is heavy, we'll stick to size/scaling
-            # and let the cubic-bezier transitions handle the rest.
-            
+            # Rotate spinner angle just in case
+            self.angle = (self.angle + 0.15) % (2 * math.pi)
+        else:
+            self.angle = (self.angle + 0.15) % (2 * math.pi)
+        
+        self.area.queue_draw()
         return True
 
     def start_loading(self):
         self.state = 'loading'
         self.monitor.stop()
-        self.wave_blue.set_visible(False)
-        self.wave_red.set_visible(False)
-        self.core.set_visible(False)
-        self.spinner.set_visible(True)
-        self.spinner.start()
-
-class OrbApp(Gtk.Application):
-    def __init__(self):
-        super().__init__(application_id="com.openclaw.dictate.pro.orb")
-        self.win = None
-
-    def do_activate(self):
-        self.win = RecordingOrb(self)
-        self.win.present()
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, self.on_sigusr1)
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_sigterm)
-
-    def on_sigusr1(self):
-        if self.win: GLib.idle_add(self.win.start_loading)
-        return True
-
-    def on_sigterm(self):
-        if self.win: self.win.monitor.stop()
-        self.quit()
-        return False
 
 if __name__ == "__main__":
-    app = OrbApp()
-    app.run(None)
+    win = RecordingOrb()
+    
+    def sigusr1_handler(signum, frame):
+        GLib.idle_add(win.start_loading)
+    def sigterm_handler(signum, frame):
+        win.monitor.stop()
+        Gtk.main_quit()
+        
+    signal.signal(signal.SIGUSR1, sigusr1_handler)
+    signal.signal(signal.SIGTERM, sigterm_handler)
+    
+    win.show_all()
+    Gtk.main()
