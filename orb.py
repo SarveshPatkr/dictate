@@ -59,6 +59,11 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.set_decorated(False)
         self.set_focusable(False)
         
+        # Always on top & Pinned (Hints for Wayland/GNOME)
+        # Note: True "Always on Top" on Wayland is compositor-dependent
+        # We set these to help GNOME recognize it as an overlay
+        self.set_can_focus(False)
+        
         self.state = 'recording'
         self.vol_smooth = 0
         

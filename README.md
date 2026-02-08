@@ -1,37 +1,41 @@
-# Dictate for Linux 🎙️
+# Dictate for Linux (Pro Version) 🎙️
 
-A minimal, system-wide dictation tool for Linux. 
+A beautiful, Siri-inspired, system-wide dictation tool for Ubuntu (Wayland). 
 
 ## 🚀 Features
-- **Visual Orb:** A red ball pulses to your voice while recording.
-- **Stop on Space:** Tap the **Space** key to stop recording instantly (or press Super+T again).
-- **Fast Transcription:** Uses Groq Cloud (Whisper).
-- **Wayland Ready:** Built to work natively with Ubuntu 22.04+.
+- **Pro Visuals:** A glassy white pearl with randomized, audio-reactive plasma whisps.
+- **Organic Physics:** Everything pulses and flows smoothly to your voice.
+- **Smart Transitions:** Morphs from a pulsing orb to a loading spinner instantly.
+- **Space-to-Stop:** Tap the **Space** bar to finish talking (or press Super+T again).
+- **Fast Transcription:** Powered by Groq Cloud (Whisper Large V3 Turbo).
 
-## 🛠️ Setup
+## 🛠️ One-Time Setup
 
-### 1. Install Requirements
+### 1. Install System Dependencies
 ```bash
 sudo apt install wl-clipboard libnotify-bin alsa-utils curl jq python3-pyaudio python3-evdev
 ```
 
-### 2. Configure API Key
-Create a `.env` file in the `dictate` folder:
+### 2. Set Up Permanent Permissions
+This ensures the "Space to Stop" feature works even after you restart your laptop:
 ```bash
-GROQ_API_KEY=your_key_here
+sudo bash -c 'echo "KERNEL==\"event*\", NAME=\"input/%k\", MODE=\"0666\", GROUP=\"input\"" > /etc/udev/rules.d/99-dictate-input.rules'
+sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-### 3. Permissions (For Space to Stop)
-```bash
-sudo chmod 666 /dev/input/event*
-```
-
-### 4. Set Keyboard Shortcut
+### 3. Create Keyboard Shortcut
 1.  Open **Settings** -> **Keyboard** -> **View and Customize Shortcuts**.
-2.  **Name:** `Dictate Mode`
-3.  **Command:** `/home/spatkar/Desktop/dictate/dictate.sh`
-4.  **Shortcut:** `Super+T` (Windows Key + T).
+2.  Scroll to **Custom Shortcuts** -> **Add Shortcut**.
+3.  **Name:** `Dictate Mode`
+4.  **Command:** `/home/spatkar/Desktop/dictate/dictate.sh`
+5.  **Shortcut:** `Super+T` (Windows Key + T).
 
 ## 📂 Usage
-- **Start:** Press `Super+T`.
-- **Stop:** Press `Super+T` again OR just tap the **Space** bar.
+- **Start Recording:** Press `Super + T`.
+- **Talk:** Watch the energy field react to your voice.
+- **Stop & Transcribe:** Tap the **Space Bar**.
+- **Paste:** Press `Ctrl + V` anywhere.
+
+## ⚙️ Configuration
+- The API key is stored in `.env`.
+- To adjust visual sensitivity, edit `orb.py` and change the `vol < 0.45` threshold.
