@@ -7,7 +7,6 @@ import struct
 import threading
 import pyaudio
 import time
-import cairo
 
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk, Gdk, GLib
@@ -61,95 +60,86 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Overlay")
-        self.set_default_size(200, 200) # Large enough to prevent "spikes"
+        self.set_default_size(150, 150)
         self.set_decorated(False)
         self.set_focusable(False)
         
         self.state = 'recording'
-        self.angle = 0
         self.scale = 1.0
-        self.glow_alpha = 0.3
         
-        self.area = Gtk.DrawingArea()
-        self.area.set_draw_func(self.on_draw)
-        self.set_child(self.area)
+        # 1. Container
+        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.main_box.set_halign(Gtk.Align.CENTER)
+        self.main_box.set_valign(Gtk.Align.CENTER)
+        
+        # 2. THE ORB / SPINNER Widget
+        # We use a Stack to switch between them
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        
+        # Red Orb
+        self.orb = Gtk.Box()
+        self.orb.add_css_class("orb")
+        self.orb.set_size_request(50, 50)
+        
+        # Blue Spinner
+        self.spinner = Gtk.Spinner()
+        self.spinner.add_css_class("spinner")
+        self.spinner.set_size_request(50, 50)
+        
+        self.stack.add_named(self.orb, "orb")
+        self.stack.add_named(self.spinner, "spinner")
+        
+        self.main_box.append(self.stack)
+        self.set_child(self.main_box)
+
+        # 3. APPLE STYLE CSS
+        css_provider = Gtk.CssProvider()
+        css_provider.load_from_data(b"""
+            window { 
+                background-color: transparent; 
+            }
+            .orb {
+                background: radial-gradient(circle at 30% 30%, #ff5e57, #ff3b30);
+                border-radius: 50%;
+                box-shadow: 0 0 20px rgba(255, 59, 48, 0.6), 
+                            inset 0 0 10px rgba(255, 255, 255, 0.2);
+                transition: min-width 0.1s ease-out, min-height 0.1s ease-out;
+            }
+            .spinner {
+                color: #007aff;
+            }
+        """)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
         self.monitor = AudioMonitor()
-        GLib.timeout_add(20, self.tick)
+        GLib.timeout_add(30, self.update_ui)
 
-    def on_draw(self, area, cr, width, height):
-        cx, cy = width / 2, height / 2
-        
-        # 1. Background (Force Transparency)
-        cr.set_operator(cairo.OPERATOR_SOURCE)
-        cr.set_source_rgba(0, 0, 0, 0)
-        cr.paint()
-        cr.set_operator(cairo.OPERATOR_OVER)
-
-        if self.state == 'recording':
-            # --- APPLE STYLE PULSING ORB ---
-            radius = 35 * self.scale
-            
-            # Draw Outer Glow (Gradient)
-            lg = cairo.RadialGradient(cx, cy, radius * 0.5, cx, cy, radius * 1.5)
-            lg.add_color_stop_rgba(0, 1.0, 0.23, 0.18, 0.6) # Solid red center
-            lg.add_color_stop_rgba(1, 1.0, 0.23, 0.18, 0.0) # Fade to nothing
-            cr.set_source(lg)
-            cr.arc(cx, cy, radius * 1.5, 0, 2 * math.pi)
-            cr.fill()
-
-            # Draw Main Orb (Smooth Glassy look)
-            cr.set_source_rgba(1.0, 0.23, 0.18, 0.9)
-            cr.arc(cx, cy, radius, 0, 2 * math.pi)
-            cr.fill()
-            
-        else:
-            # --- APPLE STYLE LOADING SPINNER ---
-            radius = 25
-            cr.set_line_width(5)
-            cr.set_line_cap(cairo.LINE_CAP_ROUND)
-            
-            # Background Ring
-            cr.set_source_rgba(0.0, 0.48, 1.0, 0.1)
-            cr.arc(cx, cy, radius, 0, 2 * math.pi)
-            cr.stroke()
-            
-            # Rotating Gradient Arc
-            lg = cairo.RadialGradient(cx, cy, radius - 10, cx, cy, radius + 10)
-            lg.add_color_stop_rgba(0, 0.0, 0.48, 1.0, 1.0)
-            cr.set_source_rgba(0.0, 0.48, 1.0, 1.0)
-            
-            # Draw a nice fading trail
-            for i in range(10):
-                alpha = 1.0 - (i * 0.1)
-                cr.set_source_rgba(0.0, 0.48, 1.0, alpha)
-                cr.arc(cx, cy, radius, self.angle - (i * 0.1), self.angle - (i * 0.1) + 0.1)
-                cr.stroke()
-
-    def tick(self):
+    def update_ui(self):
         if self.state == 'recording':
             vol = self.monitor.get_volume()
-            
-            # Noise Gate: Re-adjusted to 0.48 to be super silent on noise
+            # Noise Gate
             if vol < 0.48:
                 target_scale = 1.0
             else:
-                # Spring physics logic for "Organic" feel
-                target_scale = 1.0 + (vol * 1.2)
+                target_scale = 1.0 + (vol * 1.5)
             
-            # Organic Smoothing (Easing)
-            self.scale += (target_scale - self.scale) * 0.2
-        else:
-            # Fast, smooth rotation
-            self.angle = (self.angle + 0.15) % (2 * math.pi)
-        
-        self.area.queue_draw()
+            # Easing
+            self.scale += (target_scale - self.scale) * 0.3
+            size = int(50 * self.scale)
+            self.orb.set_size_request(size, size)
         return True
 
     def start_loading(self):
-        log("Transitioning to SIRI SPINNER...")
+        log("Transitioning to Spinner...")
         self.state = 'loading'
         self.monitor.stop()
+        self.stack.set_visible_child_name("spinner")
+        self.spinner.start()
 
 class OrbApp(Gtk.Application):
     def __init__(self):
@@ -163,7 +153,8 @@ class OrbApp(Gtk.Application):
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_sigterm)
 
     def on_sigusr1(self):
-        if self.win: self.win.start_loading()
+        if self.win:
+            GLib.idle_add(self.win.start_loading)
         return True
 
     def on_sigterm(self):
