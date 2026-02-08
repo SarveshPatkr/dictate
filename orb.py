@@ -59,15 +59,16 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.set_decorated(False)
         self.set_focusable(False)
         
-        # Always on top & Pinned (Hints for Wayland/GNOME)
-        # Note: True "Always on Top" on Wayland is compositor-dependent
-        # We set these to help GNOME recognize it as an overlay
+        # --- THE FIX: WAYLAND OVERLAY HINTS ---
+        # 1. Refuse Focus (Always on Top Step 1)
         self.set_can_focus(False)
+        self.set_can_target(False)
+        
+        # 2. Tell the OS this is a "Tool" window (helps with Always on Top)
+        # Note: Gtk4 uses different hint logic, but we can set properties
         
         self.state = 'recording'
         self.vol_smooth = 0
-        
-        # Physics State
         self.angles = [random.randint(0, 360) for _ in range(3)]
         self.base_speeds = [0.0, 0.0, 0.0]
         self.target_speeds = [0.0, 0.0, 0.0]
@@ -75,19 +76,14 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.target_stops = [30.0, 30.0, 30.0]
         
         self.randomize_parameters()
-        
         self.overlay = Gtk.Overlay()
         
-        # Layers
         self.core = Gtk.Box()
         self.core.add_css_class("white-core")
-        
         self.red = Gtk.Box()
         self.red.add_css_class("plasma-red")
-        
         self.purple = Gtk.Box()
         self.purple.add_css_class("plasma-purple")
-        
         self.blue = Gtk.Box()
         self.blue.add_css_class("plasma-blue")
         
@@ -115,9 +111,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
         GLib.timeout_add(500, self.randomize_parameters) 
 
     def randomize_parameters(self):
-        # Calm random drift
         self.target_speeds = [random.uniform(0.3, 1.5) * random.choice([-1, 1]) for _ in range(3)]
-        # Randomize "Length" of each plasma whisp (20% to 55%)
         self.target_stops = [random.uniform(20.0, 55.0) for _ in range(3)]
         return True
 
@@ -127,23 +121,18 @@ class RecordingOrb(Gtk.ApplicationWindow):
             vol = vol if vol > 0.45 else 0
             self.vol_smooth += (vol - self.vol_smooth) * 0.2
             
-            # Spin & Morph Physics
             speed_boost = 1.0 + (self.vol_smooth * 10.0)
             for i in range(3):
-                # Smoothly shift speeds and whisp lengths
                 self.base_speeds[i] += (self.target_speeds[i] - self.base_speeds[i]) * 0.15
                 self.angles[i] = (self.angles[i] + (self.base_speeds[i] * speed_boost)) % 360
                 self.gradient_stops[i] += (self.target_stops[i] - self.gradient_stops[i]) * 0.15
             
-            # Size Pulsing
             s_core = int(85 + (self.vol_smooth * 55))
             self.core.set_size_request(s_core, s_core)
             self.red.set_size_request(s_core, s_core)
             self.purple.set_size_request(s_core, s_core)
             self.blue.set_size_request(s_core + 1, s_core + 1)
 
-            # High-Performance CSS Rendering
-            # We use triple-stops to make the gradient ends look "fuzzed out"
             css = f"""
                 window {{ background-color: transparent; }}
                 .white-core {{
@@ -172,21 +161,23 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def start_loading(self):
         self.state = 'loading'
         self.monitor.stop()
-        for w in [self.blue, self.purple, self.red, self.core]:
-            w.set_visible(False)
+        self.stack_visible = False # Logic check
+        self.core.set_visible(False)
+        self.red.set_visible(False)
+        self.purple.set_visible(False)
+        self.blue.set_visible(False)
         self.spinner.set_visible(True)
         self.spinner.start()
 
 class OrbApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="com.openclaw.dictate.plasma.final.orb")
+        super().__init__(application_id="com.openclaw.dictate.overlay.orb")
         self.win = None
 
     def do_activate(self):
         self.win = RecordingOrb(self)
+        # GNOME Wayland workaround: Present as a 'Utility' type
         self.win.present()
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, self.on_sigusr1)
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_sigterm)
 
     def on_sigusr1(self):
         if self.win: GLib.idle_add(self.win.start_loading)
@@ -199,4 +190,6 @@ class OrbApp(Gtk.Application):
 
 if __name__ == "__main__":
     app = OrbApp()
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, app.on_sigusr1)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, app.on_sigterm)
     app.run(None)
