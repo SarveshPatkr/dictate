@@ -179,11 +179,11 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.purple.set_size_request(s_purple, s_purple)
         self.blue.set_size_request(s_blue, s_blue)
 
-        # Update dynamic gradients
+        # Update dynamic gradients with fuzzy edges
         css = f"""
-            #plasma-red {{ background: linear-gradient({self.angles[0]}deg, rgba(255, 59, 48, 0.8) 0%, rgba(255, 59, 48, 0.3) {self.gradient_stops[0]/2}%, transparent {self.gradient_stops[0]}%); border-radius: 50%; }}
-            #plasma-purple {{ background: linear-gradient({self.angles[1]}deg, rgba(175, 82, 222, 0.7) 0%, rgba(175, 82, 222, 0.2) {self.gradient_stops[1]/2}%, transparent {self.gradient_stops[1]}%); border-radius: 50%; }}
-            #plasma-blue {{ background: linear-gradient({self.angles[2]}deg, rgba(0, 122, 255, 0.6) 0%, rgba(0, 122, 255, 0.2) {self.gradient_stops[2]/2}%, transparent {self.gradient_stops[2]}%); border-radius: 50%; }}
+            #plasma-red {{ background: linear-gradient({self.angles[0]}deg, rgba(255, 59, 48, 0.8) 0%, rgba(255, 59, 48, 0.2) {self.gradient_stops[0]-10}%, transparent {self.gradient_stops[0]}%); border-radius: 50%; filter: blur(1px); }}
+            #plasma-purple {{ background: linear-gradient({self.angles[1]}deg, rgba(175, 82, 222, 0.7) 0%, rgba(175, 82, 222, 0.2) {self.gradient_stops[1]-10}%, transparent {self.gradient_stops[1]}%); border-radius: 50%; filter: blur(2px); }}
+            #plasma-blue {{ background: linear-gradient({self.angles[2]}deg, rgba(0, 122, 255, 0.6) 0%, rgba(0, 122, 255, 0.2) {self.gradient_stops[2]-10}%, transparent {self.gradient_stops[2]}%); border-radius: 50%; filter: blur(3px); }}
         """.encode()
         self.dynamic_css.load_from_data(css)
         return True
