@@ -7,17 +7,9 @@ import struct
 import threading
 import pyaudio
 import time
-import cairo
-import random
 
-gi.require_version('Gtk', '3.0')
+gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk, Gdk, GLib
-
-LOG_FILE = "/tmp/dictate_debug.log"
-
-def log(msg):
-    with open(LOG_FILE, "a") as f:
-        f.write(f"{time.ctime()}: [WaveOrb] {msg}\n")
 
 class AudioMonitor:
     def __init__(self):
@@ -58,126 +50,133 @@ class AudioMonitor:
                 self.p.terminate()
             except: pass
 
-class RecordingOrb(Gtk.Window):
-    def __init__(self):
-        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+class RecordingOrb(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app)
         self.set_title("Dictate Overlay")
-        self.set_default_size(250, 250)
-        self.set_app_paintable(True)
+        self.set_default_size(200, 200)
         self.set_decorated(False)
-        self.set_keep_above(True)
-        self.set_skip_taskbar_hint(True)
+        self.set_focusable(False)
         
-        # Transparent background for GTK3
-        screen = self.get_screen()
-        visual = screen.get_rgba_visual()
-        if visual and screen.is_composited():
-            self.set_visual(visual)
-
         self.state = 'recording'
-        self.angle = 0
-        self.vol_smooth = 0
         
-        # Wave particles
-        self.waves = [] # Each wave: [radius, color, alpha, speed]
+        self.overlay = Gtk.Overlay()
+        
+        # We'll use 4 "Wave" layers
+        self.waves = []
+        for i in range(4):
+            w = Gtk.Box()
+            w.add_css_class(f"wave-{i}")
+            w.set_halign(Gtk.Align.CENTER)
+            w.set_valign(Gtk.Align.CENTER)
+            self.overlay.add_overlay(w)
+            self.waves.append({"widget": w, "size": 0, "active": False, "color": "blue"})
 
-        self.area = Gtk.DrawingArea()
-        self.area.connect("draw", self.on_draw)
-        self.add(self.area)
+        # The White Core
+        self.core = Gtk.Box()
+        self.core.add_css_class("white-core")
+        self.core.set_halign(Gtk.Align.CENTER)
+        self.core.set_valign(Gtk.Align.CENTER)
+        self.core.set_size_request(40, 40)
+        self.overlay.set_child(self.core)
+        
+        # Spinner
+        self.spinner = Gtk.Spinner()
+        self.spinner.set_size_request(50, 50)
+        self.spinner.set_halign(Gtk.Align.CENTER)
+        self.spinner.set_valign(Gtk.Align.CENTER)
+        self.spinner.set_visible(False)
+        self.overlay.add_overlay(self.spinner)
+
+        self.set_child(self.overlay)
+
+        # CSS
+        css_provider = Gtk.CssProvider()
+        css_provider.load_from_data(b"""
+            window { background-color: transparent; }
+            .white-core {
+                background: radial-gradient(circle at 30% 30%, #ffffff, #e5e5ea);
+                border-radius: 50%;
+                box-shadow: 0 0 15px rgba(255, 255, 255, 0.8);
+            }
+            .wave-0, .wave-1, .wave-2, .wave-3 {
+                border-radius: 50%;
+                border: 2px solid transparent;
+            }
+            .blue-wave { border-color: rgba(0, 122, 255, 0.6); }
+            .red-wave { border-color: rgba(255, 59, 48, 0.6); }
+        """)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.monitor = AudioMonitor()
-        GLib.timeout_add(20, self.tick)
+        self.last_spawn = 0
+        GLib.timeout_add(30, self.update_ui)
 
-    def on_draw(self, area, cr):
-        width = area.get_allocated_width()
-        height = area.get_allocated_height()
-        cx, cy = width / 2, height / 2
-        
-        # Clear
-        cr.set_source_rgba(0, 0, 0, 0)
-        cr.set_operator(cairo.OPERATOR_SOURCE)
-        cr.paint()
-        cr.set_operator(cairo.OPERATOR_OVER)
-
-        if self.state == 'recording':
-            # 1. DRAW WAVES (Expanding Rings)
-            for wave in self.waves[:]:
-                radius, color, alpha, speed = wave
-                cr.set_line_width(2)
-                if color == 'red':
-                    cr.set_source_rgba(1.0, 0.23, 0.18, alpha)
-                else:
-                    cr.set_source_rgba(0.0, 0.48, 1.0, alpha)
-                
-                cr.arc(cx, cy, radius, 0, 2 * math.pi)
-                cr.stroke()
-                
-                # Update wave
-                wave[0] += speed
-                wave[2] -= 0.02 # Fade out
-                if wave[2] <= 0:
-                    self.waves.remove(wave)
-
-            # 2. DRAW WHITE CORE
-            radius = 20 + (self.vol_smooth * 15)
-            # Subtle shadow
-            cr.set_source_rgba(0, 0, 0, 0.1)
-            cr.arc(cx, cy, radius + 2, 0, 2 * math.pi)
-            cr.fill()
-            # Main white ball
-            cr.set_source_rgba(1.0, 1.0, 1.0, 1.0)
-            cr.arc(cx, cy, radius, 0, 2 * math.pi)
-            cr.fill()
-            
-        else:
-            # SIRI SPINNER
-            radius = 25
-            cr.set_line_width(4)
-            cr.set_source_rgba(0.0, 0.48, 1.0, 0.2)
-            cr.arc(cx, cy, radius, 0, 2 * math.pi)
-            cr.stroke()
-            
-            cr.set_source_rgba(0.0, 0.48, 1.0, 1.0)
-            cr.arc(cx, cy, radius, self.angle, self.angle + (math.pi * 0.7))
-            cr.stroke()
-
-    def tick(self):
+    def update_ui(self):
         if self.state == 'recording':
             vol = self.monitor.get_volume()
-            # Noise gate 0.45
+            # Noise gate
             vol = vol if vol > 0.45 else 0
-            self.vol_smooth += (vol - self.vol_smooth) * 0.2
             
-            # Spawn new waves based on sound
-            if vol > 0.5:
-                # Spawn red or blue wave
-                color = 'red' if random.random() > 0.5 else 'blue'
-                # [radius, color, alpha, speed]
-                self.waves.append([20, color, 0.8, 2.0 + (vol * 3.0)])
+            # 1. Update Core
+            core_size = int(40 + (vol * 30))
+            self.core.set_size_request(core_size, core_size)
             
-            # Rotate spinner angle just in case
-            self.angle = (self.angle + 0.15) % (2 * math.pi)
-        else:
-            self.angle = (self.angle + 0.15) % (2 * math.pi)
-        
-        self.area.queue_draw()
+            # 2. Spawn Waves
+            now = time.time()
+            if vol > 0.5 and (now - self.last_spawn) > 0.2:
+                # Find an inactive wave
+                for w in self.waves:
+                    if not w["active"]:
+                        w["active"] = True
+                        w["size"] = 40
+                        w["color"] = "red" if vol > 0.7 else "blue"
+                        w["widget"].set_visible(True)
+                        w["widget"].set_css_classes([f"wave-{self.waves.index(w)}", f"{w['color']}-wave"])
+                        self.last_spawn = now
+                        break
+            
+            # 3. Animate Waves
+            for w in self.waves:
+                if w["active"]:
+                    w["size"] += 5
+                    opacity = max(0, 1.0 - (w["size"] / 180.0))
+                    w["widget"].set_size_request(int(w["size"]), int(w["size"]))
+                    w["widget"].set_opacity(opacity)
+                    if opacity <= 0:
+                        w["active"] = False
+                        w["widget"].set_visible(False)
+                        
         return True
 
     def start_loading(self):
         self.state = 'loading'
         self.monitor.stop()
+        self.core.set_visible(False)
+        for w in self.waves: w["widget"].set_visible(False)
+        self.spinner.set_visible(True)
+        self.spinner.start()
+
+class OrbApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="com.openclaw.dictate.waves.orb")
+        self.win = None
+
+    def do_activate(self):
+        self.win = RecordingOrb(self)
+        self.win.present()
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, self.on_sigusr1)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_sigterm)
+
+    def on_sigusr1(self):
+        if self.win: GLib.idle_add(self.win.start_loading)
+        return True
+
+    def on_sigterm(self):
+        if self.win: self.win.monitor.stop()
+        self.quit()
+        return False
 
 if __name__ == "__main__":
-    win = RecordingOrb()
-    
-    def sigusr1_handler(signum, frame):
-        GLib.idle_add(win.start_loading)
-    def sigterm_handler(signum, frame):
-        win.monitor.stop()
-        Gtk.main_quit()
-        
-    signal.signal(signal.SIGUSR1, sigusr1_handler)
-    signal.signal(signal.SIGTERM, sigterm_handler)
-    
-    win.show_all()
-    Gtk.main()
+    app = OrbApp()
+    app.run(None)
