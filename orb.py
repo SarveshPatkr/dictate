@@ -44,6 +44,9 @@ class AudioMonitor:
                 self.current_volume = min(max(level, 0), 1.0)
             except Exception: pass
                 
+    def get_volume(self):
+        return self.current_volume
+
     def stop(self):
         self.running = False
         if self.p:
@@ -102,7 +105,8 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def update_ui(self):
         if not self.loading:
             vol = self.monitor.get_volume()
-            scale = 1.0 + (vol * 1.5) if vol > 0.45 else 1.0
+            # Lower threshold to 0.3 for better sensitivity
+            scale = 1.0 + (vol * 2.0) if vol > 0.3 else 1.0
             size = int(40 * scale)
             self.orb.set_size_request(size, size)
         return True
