@@ -37,7 +37,10 @@ class AudioMonitor:
         self.thread.start()
 
     def _monitor_loop(self):
-        while self.running and self.p:
+        while self.running:
+            if not self.p:
+                time.sleep(1)
+                continue
             try:
                 data = self.stream.read(1024, exception_on_overflow=False)
                 shorts = struct.unpack(f"{len(data)//2}h", data)

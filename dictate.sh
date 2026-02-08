@@ -33,6 +33,7 @@ if [ -f "$LOCK_FILE" ]; then
     # 2. Stop recording cleanly
     PID=$(cat "$LOCK_FILE")
     log "Stopping recording ($PID)..."
+    # pw-record stops on SIGINT/SIGTERM and flushes WAV correctly
     kill -TERM $PID 2>/dev/null
     wait $PID 2>/dev/null
     rm "$LOCK_FILE"
@@ -44,8 +45,8 @@ if [ -f "$LOCK_FILE" ]; then
         rm "$LISTENER_FILE"
     fi
 
-    log "Starting transcription..."
     # 3. Transcribe (Wait for Groq)
+    log "Starting transcription..."
     RESPONSE=$(curl -s -X POST "https://api.groq.com/openai/v1/audio/transcriptions" \
       -H "Authorization: Bearer $API_KEY" \
       -F "file=@$AUDIO_FILE" \
@@ -55,7 +56,7 @@ if [ -f "$LOCK_FILE" ]; then
 
     TEXT=$(echo "$RESPONSE" | jq -r '.text')
 
-    # 4. Cleanup UI (Kill Orb now that we are done)
+    # 4. Cleanup UI
     if [ -f "$GUI_FILE" ]; then
         GUI_PID=$(cat "$GUI_FILE")
         log "Closing Orb ($GUI_PID)..."
@@ -75,7 +76,12 @@ if [ -f "$LOCK_FILE" ]; then
 else
     # --- START RECORDING ---
     log "Recording started"
-    arecord -D default -f S16_LE -c 1 -r 16000 -d 120 "$AUDIO_FILE" -q &
+    # Use pw-record for better mic sharing on Ubuntu 25 (PipeWire)
+    # -p = record
+    # --format=s16 = 16-bit
+    # --rate=16000
+    # --channels=1
+    pw-record --format=s16 --rate=16000 --channels=1 "$AUDIO_FILE" >/dev/null 2>&1 &
     echo $! > "$LOCK_FILE"
     
     log "Launching Orb..."
