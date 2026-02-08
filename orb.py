@@ -7,9 +7,10 @@ import struct
 import threading
 import pyaudio
 import time
+import cairo
 
 gi.require_version('Gtk', '4.0')
-from gi.repository import Gtk, Gdk, GLib, Pango, Cairo
+from gi.repository import Gtk, Gdk, GLib
 
 LOG_FILE = "/tmp/dictate_debug.log"
 
@@ -69,46 +70,46 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.angle = 0
         self.scale = 1.0
         
-        # Draw Area for smooth animations
+        # Transparent background setup
+        self.set_app_paintable = True
+        
         self.area = Gtk.DrawingArea()
         self.area.set_draw_func(self.on_draw)
         self.set_child(self.area)
 
-        # Monitor mic
         self.monitor = AudioMonitor()
-        
-        # Animation loop
         GLib.timeout_add(20, self.tick)
 
     def on_draw(self, area, cr, width, height):
         cx, cy = width / 2, height / 2
         
+        # Ensure window background is transparent
+        # In GTK4, we rely on the CSS/Compositor usually, but for Cairo:
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        cr.set_source_rgba(0, 0, 0, 0)
+        cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+
         if self.state == 'recording':
-            # Draw Pulsing Red Orb
             radius = 20 * self.scale
             cr.set_source_rgba(1.0, 0.23, 0.18, 1.0) # #ff3b30
             cr.arc(cx, cy, radius, 0, 2 * math.pi)
             cr.fill()
             
-            # Subtle glow
             cr.set_source_rgba(1.0, 0.23, 0.18, 0.3)
             cr.arc(cx, cy, radius + 5, 0, 2 * math.pi)
             cr.fill()
             
         else:
-            # Draw Rotating Blue Spinner
             radius = 20
             cr.set_line_width(4)
-            
-            # Background ring
             cr.set_source_rgba(0.0, 0.48, 1.0, 0.2) # #007aff alpha
             cr.arc(cx, cy, radius, 0, 2 * math.pi)
             cr.stroke()
             
-            # Rotating arc
             cr.set_source_rgba(0.0, 0.48, 1.0, 1.0) # #007aff
             start_angle = self.angle
-            end_angle = self.angle + (math.pi * 0.7) # 70% of circle
+            end_angle = self.angle + (math.pi * 0.7)
             cr.arc(cx, cy, radius, start_angle, end_angle)
             cr.stroke()
 
@@ -116,10 +117,8 @@ class RecordingOrb(Gtk.ApplicationWindow):
         if self.state == 'recording':
             vol = self.monitor.get_volume()
             target_scale = 1.0 + (vol * 1.0) if vol > 0.45 else 1.0
-            # Smoothly transition scale
             self.scale += (target_scale - self.scale) * 0.3
         else:
-            # Rotate
             self.angle += 0.2
             if self.angle > 2 * math.pi:
                 self.angle -= 2 * math.pi
@@ -128,7 +127,6 @@ class RecordingOrb(Gtk.ApplicationWindow):
         return True
 
     def start_loading(self):
-        log("Transitioning to SPINNER...")
         self.state = 'loading'
         self.monitor.stop()
 
