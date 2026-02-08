@@ -1,13 +1,12 @@
 #!/bin/bash
 
 # Configuration
-# Load API key from .env file relative to script location
+# Load API key from .env file
 SCRIPT_DIR="$(dirname "$0")"
 if [ -f "$SCRIPT_DIR/.env" ]; then
     export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
 fi
 
-# Fallback if not set (User should set in .env)
 if [ -z "$GROQ_API_KEY" ]; then
     notify-send "Dictate Error" "GROQ_API_KEY not found in .env"
     exit 1
@@ -19,102 +18,61 @@ GUI_FILE="/tmp/dictate_gui.pid"
 AUDIO_FILE="/tmp/dictate_audio.wav"
 DEBUG_LOG="/tmp/dictate_debug.log"
 
-# Function for logging
-log() {
-    echo "$(date): $1" >> "$DEBUG_LOG"
-}
-
-# Dependencies check
-if ! command -v wl-copy &> /dev/null; then
-    notify-send "Dictate Error" "Please install wl-clipboard: sudo apt install wl-clipboard"
-    exit 1
-fi
-
-# Check for Zenity (Optional but recommended for UI)
-HAS_ZENITY=false
-if command -v zenity &> /dev/null; then
-    HAS_ZENITY=true
-fi
+log() { echo "$(date): $1" >> "$DEBUG_LOG"; }
 
 if [ -f "$LOCK_FILE" ]; then
-    # --- STOP RECORDING & TRANSCRIBE ---
+    # --- STOP & TRANSCRIBE ---
     
-    # 1. Kill the GUI indicator first
+    # 1. Close the Orb
     if [ -f "$GUI_FILE" ]; then
-        GUI_PID=$(cat "$GUI_FILE")
-        kill "$GUI_PID" 2>/dev/null
+        kill $(cat "$GUI_FILE") 2>/dev/null
         rm "$GUI_FILE"
     fi
 
-    # 2. Kill the recording process nicely (SIGTERM allows arecord to fix WAV header)
+    # 2. Stop recording cleanly
     PID=$(cat "$LOCK_FILE")
-    if ps -p $PID > /dev/null; then
-        kill -TERM $PID
-        # Wait for process to actually exit so file is flushed
-        wait $PID 2>/dev/null
-    fi
+    kill -TERM $PID 2>/dev/null
+    wait $PID 2>/dev/null
     rm "$LOCK_FILE"
     
-    # Small safety buffer to ensure FS flush
-    sleep 0.1
+    # 3. Focus Recovery Delay (CRITICAL)
+    # Give Ubuntu a moment to refocus your text editor after the Orb closes
+    sleep 0.3
     
     notify-send -t 2000 "Dictate" "Transcribing..."
 
-    # Check if audio file exists and has size
-    if [ ! -s "$AUDIO_FILE" ]; then
-        notify-send "Dictate Error" "Audio file is empty. Check microphone."
-        log "Error: Audio file empty or missing."
-        exit 1
-    fi
-
-    log "Sending audio to Groq (Size: $(du -h $AUDIO_FILE))"
-
-    # 3. Send to Groq API (Whisper)
-    # Note: Groq Whisper accepts m4a/mp3/wav. We send wav directly.
+    # 4. API Call
     RESPONSE=$(curl -s -X POST "https://api.groq.com/openai/v1/audio/transcriptions" \
       -H "Authorization: Bearer $API_KEY" \
       -F "file=@$AUDIO_FILE" \
       -F "model=whisper-large-v3-turbo" \
       -F "temperature=0" \
       -F "response_format=json")
-    
-    log "Response: $RESPONSE"
 
-    # 4. Extract text
     TEXT=$(echo "$RESPONSE" | jq -r '.text')
 
-    # 5. Handle result
     if [ "$TEXT" != "null" ] && [ -n "$TEXT" ]; then
-        # Copy to clipboard (Wayland)
+        # 5. Copy to Clipboard
         echo -n "$TEXT" | wl-copy
+        sleep 0.2 # Wait for clipboard to settle
         
-        # Notify
-        notify-send -t 3000 "Dictate" "Copied to clipboard!"
-        log "Success: $TEXT"
+        # 6. AUTO-PASTE
+        # Use our improved Python tool
+        log "Triggering paste tool..."
+        python3 "$SCRIPT_DIR/paste_direct.py" >> "$DEBUG_LOG" 2>&1 &
+        
+        notify-send -t 1500 "Dictate" "Pasted!"
     else
-        ERROR=$(echo "$RESPONSE" | jq -r '.error.message // "Unknown error"')
-        notify-send "Dictate Failed" "$ERROR"
-        log "Failed: $ERROR"
+        notify-send "Dictate Failed" "Check logs"
     fi
 
 else
     # --- START RECORDING ---
-    
-    # Record raw WAV (CD quality is overkill but safe, 16kHz mono is fine for speech)
-    # -d 60: Auto-stop after 60s to prevent infinite recording if you forget
-    # We use -D default to pick default mic
     arecord -D default -f S16_LE -c 1 -r 16000 -d 120 "$AUDIO_FILE" -q &
     echo $! > "$LOCK_FILE"
     
-    # Launch GUI Indicator (Custom Python Orb)
-    # We use nohup to ensure it runs independent of the shell
-    if [ -f "$SCRIPT_DIR/orb.py" ]; then
-        nohup python3 "$SCRIPT_DIR/orb.py" >/dev/null 2>&1 &
-        echo $! > "$GUI_FILE"
-    else
-        # Fallback
-        notify-send -t 0 "Dictate" "🎙️ Listening... (Press again to stop)"
-    fi
+    nohup python3 "$SCRIPT_DIR/orb.py" >/dev/null 2>&1 &
+    echo $! > "$GUI_FILE"
     
-    log "Started recording to $AUDIO_FILE"
+    log "Recording started"
 fi
