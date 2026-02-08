@@ -54,7 +54,7 @@ class AudioMonitor:
 class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
-        self.set_title("Dictate Overlay")
+        self.set_title("Dictate Pro")
         self.set_default_size(300, 300)
         self.set_decorated(False)
         self.set_focusable(False)
@@ -62,16 +62,14 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.state = 'recording'
         self.vol_smooth = 0
         
-        # Initialize animation state
+        # Physics State
         self.angles = [random.randint(0, 360) for _ in range(3)]
         self.base_speeds = [0.0, 0.0, 0.0]
         self.target_speeds = [0.0, 0.0, 0.0]
+        self.gradient_stops = [30.0, 30.0, 30.0]
+        self.target_stops = [30.0, 30.0, 30.0]
         
-        # NEW: Gradient Stop Randomization
-        self.gradient_stops = [40.0, 40.0, 40.0]
-        self.target_stops = [40.0, 40.0, 40.0]
-        
-        self.randomize_speeds()
+        self.randomize_parameters()
         
         self.overlay = Gtk.Overlay()
         
@@ -108,14 +106,13 @@ class RecordingOrb(Gtk.ApplicationWindow):
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.monitor = AudioMonitor()
-        
         GLib.timeout_add(30, self.update_ui)
-        GLib.timeout_add(1000, self.randomize_speeds) 
+        GLib.timeout_add(1000, self.randomize_parameters) 
 
-    def randomize_speeds(self):
-        # Random speeds/directions
-        self.target_speeds = [random.uniform(0.2, 1.2) * random.choice([-1, 1]) for _ in range(3)]
-        # Randomize how far the gradient extends (10% to 55%)
+    def randomize_parameters(self):
+        # Calm random drift
+        self.target_speeds = [random.uniform(0.3, 1.5) * random.choice([-1, 1]) for _ in range(3)]
+        # Randomize "Length" of each plasma whisp (10% to 55%)
         self.target_stops = [random.uniform(10.0, 55.0) for _ in range(3)]
         return True
 
@@ -125,40 +122,40 @@ class RecordingOrb(Gtk.ApplicationWindow):
             vol = vol if vol > 0.45 else 0
             self.vol_smooth += (vol - self.vol_smooth) * 0.2
             
-            # Spin Logic with Audio Boost
+            # Spin & Morph Physics
             speed_boost = 1.0 + (self.vol_smooth * 10.0)
             for i in range(3):
-                # Smoothly interpolate speeds
-                self.base_speeds[i] += (self.target_speeds[i] - self.base_speeds[i]) * 0.05
+                # Smoothly shift speeds and whisp lengths
+                self.base_speeds[i] += (self.target_speeds[i] - self.base_speeds[i]) * 0.08
                 self.angles[i] = (self.angles[i] + (self.base_speeds[i] * speed_boost)) % 360
-                # Smoothly interpolate gradient stops
-                self.gradient_stops[i] += (self.target_stops[i] - self.gradient_stops[i]) * 0.05
+                self.gradient_stops[i] += (self.target_stops[i] - self.gradient_stops[i]) * 0.08
             
-            # Size Logic
-            s_core = int(85 + (self.vol_smooth * 50))
+            # Size Pulsing
+            s_core = int(85 + (self.vol_smooth * 55))
             self.core.set_size_request(s_core, s_core)
             self.red.set_size_request(s_core, s_core)
             self.purple.set_size_request(s_core, s_core)
             self.blue.set_size_request(s_core + 1, s_core + 1)
 
-            # CSS - Using Dynamic Stops
+            # High-Performance CSS Rendering
+            # We use triple-stops to make the gradient ends look "fuzzed out"
             css = f"""
                 window {{ background-color: transparent; }}
                 .white-core {{
                     background: radial-gradient(circle at 30% 30%, #ffffff, #f2f2f7);
                     border-radius: 50%;
-                    box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+                    box-shadow: 0 0 15px rgba(255, 255, 255, 0.4);
                 }}
                 .plasma-red {{
-                    background: linear-gradient({self.angles[0]}deg, rgba(255, 59, 48, 0.75) 0%, transparent {self.gradient_stops[0]}%);
+                    background: linear-gradient({self.angles[0]}deg, rgba(255, 59, 48, 0.8) 0%, rgba(255, 59, 48, 0.3) {self.gradient_stops[0]/2}%, transparent {self.gradient_stops[0]}%);
                     border-radius: 50%;
                 }}
                 .plasma-purple {{
-                    background: linear-gradient({self.angles[1]}deg, rgba(175, 82, 222, 0.65) 0%, transparent {self.gradient_stops[1]}%);
+                    background: linear-gradient({self.angles[1]}deg, rgba(175, 82, 222, 0.7) 0%, rgba(175, 82, 222, 0.2) {self.gradient_stops[1]/2}%, transparent {self.gradient_stops[1]}%);
                     border-radius: 50%;
                 }}
                 .plasma-blue {{
-                    background: linear-gradient({self.angles[2]}deg, rgba(0, 122, 255, 0.55) 0%, transparent {self.gradient_stops[2]}%);
+                    background: linear-gradient({self.angles[2]}deg, rgba(0, 122, 255, 0.6) 0%, rgba(0, 122, 255, 0.2) {self.gradient_stops[2]/2}%, transparent {self.gradient_stops[2]}%);
                     border-radius: 50%;
                 }}
                 .spinner {{ color: #007aff; }}
@@ -177,7 +174,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
 class OrbApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="com.openclaw.dictate.final.orb")
+        super().__init__(application_id="com.openclaw.dictate.plasma.final.orb")
         self.win = None
 
     def do_activate(self):
