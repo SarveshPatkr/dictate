@@ -1,13 +1,13 @@
 # Speech-to-Text Ubuntu / Linux (Groq AI Whisper) 🎙️
 
-A lightweight, system-wide **Linux dictation tool** for Ubuntu and other distributions. This tool provides near-instant **voice-to-text** (STT) capabilities in every application using the high-speed **Groq API**.
+A lightweight, system-wide **Linux dictation tool** for Ubuntu and other distributions. This tool provides fast **voice-to-text** (STT) capabilities in every application using the high-speed **Groq API**.
 
 ---
 
 ## 🚀 Key Features
 
 - **Voice to Text for Ubuntu**: Works system-wide—use your voice to type in any app (Browser, WhatsApp, IDE, Terminal).
-- **Fastest Speech to Text Linux**: Leverages Groq Cloud (Whisper Large V3 Turbo) for sub-second transcription speeds.
+- **Fast Speech to Text Linux**: Leverages Groq Cloud (Whisper Large V3 Turbo). Get your transcription within 5-10 seconds after you finish talking.
 - **Linux Voice Typing Shortcut**: Trigger recording with a hotkey and stop with the space bar for a seamless workflow.
 - **Wayland & X11 Compatible**: Native support for modern Ubuntu (Wayland) using `wl-clipboard`.
 - **Free Linux STT**: A powerful, open-source alternative to proprietary dictation software.
