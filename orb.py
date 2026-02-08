@@ -54,37 +54,36 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Overlay")
-        self.set_default_size(200, 200)
+        self.set_default_size(250, 250)
         self.set_decorated(False)
         self.set_focusable(False)
         
         self.state = 'recording'
-        self.scale1 = 1.0
-        self.scale2 = 1.0
-        self.scale3 = 1.0
+        self.angle = 0
+        self.vol_smooth = 0
         
-        # Overlay allows us to stack multiple layers for the "Fluid" look
+        # Overlay for stacking layers
         self.overlay = Gtk.Overlay()
         
-        # Layer 1: Outer Blue/Purple Glow
-        self.orb_outer = Gtk.Box()
-        self.orb_outer.add_css_class("orb-outer")
-        self.orb_outer.set_halign(Gtk.Align.CENTER)
-        self.orb_outer.set_valign(Gtk.Align.CENTER)
+        # Layer 1: The Blue Wave (Bottom)
+        self.wave_blue = Gtk.Box()
+        self.wave_blue.add_css_class("wave-blue")
+        self.wave_blue.set_halign(Gtk.Align.CENTER)
+        self.wave_blue.set_valign(Gtk.Align.CENTER)
         
-        # Layer 2: Mid Pink/Red Glow
-        self.orb_mid = Gtk.Box()
-        self.orb_mid.add_css_class("orb-mid")
-        self.orb_mid.set_halign(Gtk.Align.CENTER)
-        self.orb_mid.set_valign(Gtk.Align.CENTER)
+        # Layer 2: The Red Wave (Middle)
+        self.wave_red = Gtk.Box()
+        self.wave_red.add_css_class("wave-red")
+        self.wave_red.set_halign(Gtk.Align.CENTER)
+        self.wave_red.set_valign(Gtk.Align.CENTER)
         
-        # Layer 3: Core Red
-        self.orb_core = Gtk.Box()
-        self.orb_core.add_css_class("orb-core")
-        self.orb_core.set_halign(Gtk.Align.CENTER)
-        self.orb_core.set_valign(Gtk.Align.CENTER)
+        # Layer 3: The White Core (Top)
+        self.core = Gtk.Box()
+        self.core.add_css_class("core-white")
+        self.core.set_halign(Gtk.Align.CENTER)
+        self.core.set_valign(Gtk.Align.CENTER)
         
-        # Spinner Layer
+        # Spinner
         self.spinner = Gtk.Spinner()
         self.spinner.add_css_class("spinner")
         self.spinner.set_size_request(60, 60)
@@ -92,35 +91,37 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.spinner.set_valign(Gtk.Align.CENTER)
         self.spinner.set_visible(False)
 
-        self.overlay.set_child(self.orb_outer)
-        self.overlay.add_overlay(self.orb_mid)
-        self.overlay.add_overlay(self.orb_core)
+        self.overlay.set_child(self.wave_blue)
+        self.overlay.add_overlay(self.wave_red)
+        self.overlay.add_overlay(self.core)
         self.overlay.add_overlay(self.spinner)
-        
         self.set_child(self.overlay)
 
-        # CSS for Layered Siri Look
+        # CSS for the "Fluid Blob" effect
         css_provider = Gtk.CssProvider()
         css_provider.load_from_data(b"""
             window { background-color: transparent; }
-            .orb-outer {
-                background: radial-gradient(circle, rgba(0, 122, 255, 0.4) 0%, rgba(0, 122, 255, 0) 70%);
-                border-radius: 50%;
+            .wave-blue {
+                background: radial-gradient(circle, #007aff 0%, rgba(0, 122, 255, 0) 70%);
+                border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
+                min-width: 140px; min-height: 140px;
+                opacity: 0.6;
+                transition: all 0.3s ease-out;
+            }
+            .wave-red {
+                background: radial-gradient(circle, #ff3b30 0%, rgba(255, 59, 48, 0) 70%);
+                border-radius: 60% 40% 30% 70% / 50% 60% 40% 60%;
                 min-width: 120px; min-height: 120px;
-                transition: all 0.2s cubic-bezier(0.1, 0.7, 0.1, 1);
+                opacity: 0.7;
+                transition: all 0.2s ease-out;
             }
-            .orb-mid {
-                background: radial-gradient(circle, rgba(255, 45, 85, 0.6) 0%, rgba(255, 45, 85, 0) 70%);
+            .core-white {
+                background: radial-gradient(circle at 30% 30%, #ffffff 0%, #f2f2f7 100%);
                 border-radius: 50%;
-                min-width: 90px; min-height: 90px;
-                transition: all 0.15s cubic-bezier(0.1, 0.7, 0.1, 1);
-            }
-            .orb-core {
-                background: radial-gradient(circle at 30% 30%, #ff5e57, #ff3b30);
-                border-radius: 50%;
-                min-width: 50px; min-height: 50px;
-                box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.3);
-                transition: all 0.1s cubic-bezier(0.1, 0.7, 0.1, 1);
+                min-width: 40px; min-height: 40px;
+                box-shadow: 0 0 20px rgba(255, 255, 255, 0.8),
+                            inset 0 0 10px rgba(0, 0, 0, 0.1);
+                transition: all 0.1s ease-out;
             }
             .spinner { color: #007aff; }
         """)
@@ -132,42 +133,49 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def update_ui(self):
         if self.state == 'recording':
             vol = self.monitor.get_volume()
+            # Noise gate
+            vol = vol if vol > 0.48 else 0
+            # Smoothing
+            self.vol_smooth += (vol - self.vol_smooth) * 0.3
             
-            # Independent scaling for "Fluid" effect
-            # Threshold 0.45
-            if vol < 0.45:
-                t1, t2, t3 = 1.0, 1.0, 1.0
-            else:
-                # Core reacts most
-                t3 = 1.0 + (vol * 1.8)
-                # Mid reacts with lag
-                t2 = 1.0 + (vol * 1.4)
-                # Outer reacts least
-                t1 = 1.0 + (vol * 1.0)
+            # Animation Logic
+            self.angle += 0.1
             
-            # Easing
-            self.scale1 += (t1 - self.scale1) * 0.2
-            self.scale2 += (t2 - self.scale2) * 0.3
-            self.scale3 += (t3 - self.scale3) * 0.4
+            # 1. Update Core (White)
+            core_size = int(40 + (self.vol_smooth * 30))
+            self.core.set_size_request(core_size, core_size)
             
-            self.orb_outer.set_size_request(int(120 * self.scale1), int(120 * self.scale1))
-            self.orb_mid.set_size_request(int(90 * self.scale2), int(90 * self.scale2))
-            self.orb_core.set_size_request(int(50 * self.scale3), int(50 * self.scale3))
+            # 2. Update Waves (Fluid morphing)
+            # We change the border-radius dynamically to simulate "waves"
+            r1 = int(40 + math.sin(self.angle) * 10)
+            r2 = int(60 + math.cos(self.angle) * 15)
+            r3 = int(50 + math.sin(self.angle * 0.5) * 20)
+            
+            # Use size to simulate growth
+            red_size = int(120 + (self.vol_smooth * 100))
+            blue_size = int(140 + (self.vol_smooth * 120))
+            
+            self.wave_red.set_size_request(red_size, red_size)
+            self.wave_blue.set_size_request(blue_size, blue_size)
+            
+            # Apply dynamic rotation/wobble via CSS (minimal impact)
+            # Since updating CSS data every frame is heavy, we'll stick to size/scaling
+            # and let the cubic-bezier transitions handle the rest.
             
         return True
 
     def start_loading(self):
         self.state = 'loading'
         self.monitor.stop()
-        self.orb_outer.set_visible(False)
-        self.orb_mid.set_visible(False)
-        self.orb_core.set_visible(False)
+        self.wave_blue.set_visible(False)
+        self.wave_red.set_visible(False)
+        self.core.set_visible(False)
         self.spinner.set_visible(True)
         self.spinner.start()
 
 class OrbApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="com.openclaw.dictate.orb")
+        super().__init__(application_id="com.openclaw.dictate.pro.orb")
         self.win = None
 
     def do_activate(self):
