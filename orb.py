@@ -108,19 +108,19 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def update_orb(self):
         vol = self.monitor.get_volume()
         
-        # Map volume (0.0 - 1.0) to size scale (1.0 - 2.0)
-        # Threshold to ignore background noise
-        if vol < 0.3:
+        # Noise Gate / Thresholding
+        # Ignore volume below 40% (0.4) to filter out fan noise/clicks
+        if vol < 0.45:
             target_scale = 1.0
         else:
-            target_scale = 1.0 + (vol * 1.0) # Max 2x size
+            # Map remaining range (0.45 - 1.0) to scale (1.0 - 2.0)
+            # (vol - threshold) / (1 - threshold)
+            normalized = (vol - 0.45) / 0.55
+            target_scale = 1.0 + (normalized * 1.0) 
             
         target_size = int(self.base_size * target_scale)
         
         self.orb.set_size_request(target_size, target_size)
-        
-        # Add a glow effect based on volume? 
-        # (CSS transitions handle the smooth resizing)
         
         return True
 
