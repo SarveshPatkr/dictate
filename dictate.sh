@@ -106,18 +106,13 @@ else
     arecord -D default -f S16_LE -c 1 -r 16000 -d 120 "$AUDIO_FILE" -q &
     echo $! > "$LOCK_FILE"
     
-    # Launch GUI Indicator if available
-    if [ "$HAS_ZENITY" = true ]; then
-        zenity --progress --pulsate \
-               --title="🎙️ Dictating" \
-               --text="Listening..." \
-               --percentage=0 \
-               --auto-close \
-               --no-cancel \
-               --width=300 \
-               2>/dev/null &
+    # Launch GUI Indicator (Custom Python Orb)
+    # We use nohup to ensure it runs independent of the shell
+    if [ -f "$SCRIPT_DIR/orb.py" ]; then
+        nohup python3 "$SCRIPT_DIR/orb.py" >/dev/null 2>&1 &
         echo $! > "$GUI_FILE"
     else
+        # Fallback
         notify-send -t 0 "Dictate" "🎙️ Listening... (Press again to stop)"
     fi
     
