@@ -1,13 +1,11 @@
 #!/bin/bash
 
 # Configuration
-# Load API key from .env file relative to script location
 SCRIPT_DIR="$(dirname "$0")"
 if [ -f "$SCRIPT_DIR/.env" ]; then
     export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
 fi
 
-# Fallback if not set (User should set in .env)
 if [ -z "$GROQ_API_KEY" ]; then
     notify-send "Dictate Error" "GROQ_API_KEY not found in .env"
     exit 1
@@ -20,88 +18,67 @@ LISTENER_FILE="/tmp/dictate_listener.pid"
 AUDIO_FILE="/tmp/dictate_audio.wav"
 DEBUG_LOG="/tmp/dictate_debug.log"
 
-# Function for logging
-log() {
-    echo "$(date): $1" >> "$DEBUG_LOG"
-}
-
-# Dependencies check
-if ! command -v wl-copy &> /dev/null; then
-    notify-send "Dictate Error" "Please install wl-clipboard: sudo apt install wl-clipboard"
-    exit 1
-fi
+log() { echo "$(date): $1" >> "$DEBUG_LOG"; }
 
 if [ -f "$LOCK_FILE" ]; then
-    # --- STOP RECORDING & TRANSCRIBE ---
+    # --- STOP & TRANSCRIBE ---
     
-    # 1. Kill the GUI indicator (Orb)
+    # 1. Switch Orb to LOADING state (Blue bar)
     if [ -f "$GUI_FILE" ]; then
         GUI_PID=$(cat "$GUI_FILE")
-        kill "$GUI_PID" 2>/dev/null
-        rm "$GUI_FILE"
+        kill -USR1 "$GUI_PID" 2>/dev/null
     fi
 
-    # 1b. Kill the Space Listener
+    # 2. Stop recording cleanly
+    PID=$(cat "$LOCK_FILE")
+    kill -TERM $PID 2>/dev/null
+    wait $PID 2>/dev/null
+    rm "$LOCK_FILE"
+    
+    # 2b. Stop Space Listener
     if [ -f "$LISTENER_FILE" ]; then
-        LISTENER_PID=$(cat "$LISTENER_FILE")
-        kill "$LISTENER_PID" 2>/dev/null
+        L_PID=$(cat "$LISTENER_FILE")
+        kill "$L_PID" 2>/dev/null
         rm "$LISTENER_FILE"
     fi
 
-    # 2. Kill the recording process nicely (SIGTERM allows arecord to fix WAV header)
-    PID=$(cat "$LOCK_FILE")
-    if ps -p $PID > /dev/null; then
-        kill -TERM $PID
-        wait $PID 2>/dev/null
-    fi
-    rm "$LOCK_FILE"
-    
-    sleep 0.1
-    notify-send -t 2000 "Dictate" "Transcribing..."
-
-    # 3. Send to Groq API (Whisper)
+    # 3. Transcribe (No notification anymore!)
     RESPONSE=$(curl -s -X POST "https://api.groq.com/openai/v1/audio/transcriptions" \
       -H "Authorization: Bearer $API_KEY" \
       -F "file=@$AUDIO_FILE" \
       -F "model=whisper-large-v3-turbo" \
       -F "temperature=0" \
       -F "response_format=json")
-    
-    # 4. Extract text
+
     TEXT=$(echo "$RESPONSE" | jq -r '.text')
 
-    # 5. Handle result
+    # 4. Cleanup UI (Kill Orb now)
+    if [ -f "$GUI_FILE" ]; then
+        kill $(cat "$GUI_FILE") 2>/dev/null
+        rm "$GUI_FILE"
+    fi
+
     if [ "$TEXT" != "null" ] && [ -n "$TEXT" ]; then
-        # Copy to clipboard (Wayland)
         echo -n "$TEXT" | wl-copy
-        
-        # Notify
-        notify-send -t 3000 "Dictate" "Copied to clipboard!"
+        notify-send -t 2000 "Dictate" "Copied to clipboard!"
         log "Success: $TEXT"
     else
-        ERROR=$(echo "$RESPONSE" | jq -r '.error.message // "Unknown error"')
-        notify-send "Dictate Failed" "$ERROR"
-        log "Failed: $ERROR"
+        notify-send "Dictate Failed" "Check logs"
     fi
 
 else
     # --- START RECORDING ---
-    
-    # Record audio
     arecord -D default -f S16_LE -c 1 -r 16000 -d 120 "$AUDIO_FILE" -q &
     echo $! > "$LOCK_FILE"
     
-    # Launch Visual Orb
-    if [ -f "$SCRIPT_DIR/orb.py" ]; then
-        nohup python3 "$SCRIPT_DIR/orb.py" >/dev/null 2>&1 &
-        echo $! > "$GUI_FILE"
-    fi
-
-    # Launch Space Listener
+    nohup python3 "$SCRIPT_DIR/orb.py" >/dev/null 2>&1 &
+    echo $! > "$GUI_FILE"
+    
+    # Start Space Listener
     if [ -f "$SCRIPT_DIR/space_listener.py" ]; then
         nohup python3 "$SCRIPT_DIR/space_listener.py" >/dev/null 2>&1 &
         echo $! > "$LISTENER_FILE"
     fi
     
-    log "Started recording"
+    log "Recording started"
 fi
