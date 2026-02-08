@@ -61,26 +61,32 @@ class RecordingOrb(Gtk.ApplicationWindow):
         
         self.state = 'recording'
         self.vol_smooth = 0
-        self.angles = [0, 0, 0] # Red, Purple, Blue
+        
+        # Random speeds and directions for each layer
+        self.angles = [random.randint(0,360) for _ in range(3)]
+        self.base_speeds = [random.uniform(2, 5) * random.choice([-1, 1]) for _ in range(3)]
         
         self.overlay = Gtk.Overlay()
         
-        # Layer 1: Blue Aura (Largest)
-        self.blue = Gtk.Box()
-        self.blue.add_css_class("plasma-blue")
+        # --- LAYER ORDER (Bottom to Top) ---
         
-        # Layer 2: Purple Plasma (Middle)
-        self.purple = Gtk.Box()
-        self.purple.add_css_class("plasma-purple")
+        # 1. White Core (The Canvas at the bottom)
+        self.core = Gtk.Box()
+        self.core.add_css_class("white-core")
+        self.core_base_size = 85
+        self.core.set_size_request(self.core_base_size, self.core_base_size)
         
-        # Layer 3: Red Plasma (Innermost)
+        # 2. Blue Plasma (Smallest - Inside)
         self.red = Gtk.Box()
         self.red.add_css_class("plasma-red")
         
-        # Layer 4: White Core (Center)
-        self.core = Gtk.Box()
-        self.core.add_css_class("white-core")
-        self.core.set_size_request(65, 65) # Bigger core
+        # 3. Purple Plasma (Medium - Inside)
+        self.purple = Gtk.Box()
+        self.purple.add_css_class("plasma-purple")
+        
+        # 4. Red Plasma (Largest - Overflowing)
+        self.blue = Gtk.Box()
+        self.blue.add_css_class("plasma-blue")
         
         # Spinner
         self.spinner = Gtk.Spinner()
@@ -88,11 +94,13 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.spinner.set_visible(False)
 
         # Build stack
-        for w in [self.blue, self.purple, self.red, self.core, self.spinner]:
-            w.set_halign(Gtk.Align.CENTER)
-            w.set_valign(Gtk.Align.CENTER)
-            if w == self.blue: self.overlay.set_child(w)
-            else: self.overlay.add_overlay(w)
+        # Core first (bottom)
+        self.overlay.set_child(self.core)
+        # Then the lights on TOP of the core
+        self.overlay.add_overlay(self.red)
+        self.overlay.add_overlay(self.purple)
+        self.overlay.add_overlay(self.blue)
+        self.overlay.add_overlay(self.spinner)
         
         self.set_child(self.overlay)
 
@@ -108,47 +116,49 @@ class RecordingOrb(Gtk.ApplicationWindow):
             vol = vol if vol > 0.45 else 0
             self.vol_smooth += (vol - self.vol_smooth) * 0.2
             
-            # Rotate angles
-            self.angles[0] = (self.angles[0] + 8) % 360  # Red (Fast)
-            self.angles[1] = (self.angles[1] + 5) % 360  # Purple (Medium)
-            self.angles[2] = (self.angles[2] + 3) % 360  # Blue (Slow)
+            # 1. Random & Audio-Reactive Rotation
+            speed_boost = 1.0 + (self.vol_smooth * 4.0) # Spin much faster when talking
+            for i in range(3):
+                self.angles[i] = (self.angles[i] + (self.base_speeds[i] * speed_boost)) % 360
             
-            # Radii logic (Tight gaps)
-            # Core: 65, Red: 75, Purple: 90, Blue: 110
-            s_red = int(75 + self.vol_smooth * 50)
-            s_purple = int(90 + self.vol_smooth * 70)
-            s_blue = int(110 + self.vol_smooth * 90)
+            # 2. Size Logic (Tight on top of core)
+            # Core is 85px. 
+            # Blue (Topmost/Largest) should be ~92px (slight overflow)
+            # Purple (Middle) should be ~75px (inside)
+            # Red (Smallest) should be ~55px (deep inside)
             
-            self.red.set_size_request(s_red, s_red)
-            self.purple.set_size_request(s_purple, s_purple)
+            s_core = int(self.core_base_size + self.vol_smooth * 20)
+            s_blue = int(s_core + 8 + self.vol_smooth * 15)
+            s_purple = int(s_core - 10 + self.vol_smooth * 10)
+            s_red = int(s_core - 30 + self.vol_smooth * 5)
+            
+            self.core.set_size_request(s_core, s_core)
             self.blue.set_size_request(s_blue, s_blue)
-            self.core.set_size_request(int(65 + self.vol_smooth*20), int(65 + self.vol_smooth*20))
+            self.purple.set_size_request(s_purple, s_purple)
+            self.red.set_size_request(s_red, s_red)
 
-            # Update CSS with "Patchy" conic gradients and rotations
+            # 3. Update CSS with Patchy Gradients
             css = f"""
                 window {{ background-color: transparent; }}
                 .white-core {{
                     background: radial-gradient(circle at 30% 30%, #ffffff, #e5e5ea);
                     border-radius: 50%;
-                    box-shadow: 0 0 25px rgba(255, 255, 255, 0.9);
+                    box-shadow: 0 0 20px rgba(255, 255, 255, 0.6);
                 }}
-                .plasma-red {{
-                    background: conic-gradient(from {self.angles[0]}deg, #ff3b30 0%, transparent 30%, #ff9500 50%, transparent 80%, #ff3b30 100%);
+                .plasma-blue {{
+                    background: conic-gradient(from {self.angles[0]}deg, rgba(0, 122, 255, 0.7) 0%, transparent 40%, rgba(90, 200, 250, 0.5) 60%, transparent 90%);
                     border-radius: 50%;
-                    opacity: 0.8;
                     filter: blur(2px);
                 }}
                 .plasma-purple {{
-                    background: conic-gradient(from {self.angles[1]}deg, #5856d6 0%, transparent 25%, #af52de 50%, transparent 75%, #5856d6 100%);
+                    background: conic-gradient(from {self.angles[1]}deg, rgba(88, 86, 214, 0.6) 0%, transparent 25%, rgba(175, 82, 222, 0.4) 50%, transparent 75%);
                     border-radius: 50%;
-                    opacity: 0.6;
-                    filter: blur(4px);
+                    filter: blur(3px);
                 }}
-                .plasma-blue {{
-                    background: conic-gradient(from {self.angles[2]}deg, #007aff 0%, transparent 40%, #5ac8fa 60%, transparent 90%, #007aff 100%);
+                .plasma-red {{
+                    background: conic-gradient(from {self.angles[2]}deg, rgba(255, 59, 48, 0.8) 0%, transparent 30%, rgba(255, 149, 0, 0.6) 50%, transparent 80%);
                     border-radius: 50%;
-                    opacity: 0.4;
-                    filter: blur(6px);
+                    filter: blur(1px);
                 }}
                 .spinner {{ color: #007aff; }}
             """.encode()
@@ -166,7 +176,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
 class OrbApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="com.openclaw.dictate.plasma.v2.orb")
+        super().__init__(application_id="com.openclaw.dictate.plasma.v3.orb")
         self.win = None
 
     def do_activate(self):
