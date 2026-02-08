@@ -80,7 +80,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Pro")
-        self.set_default_size(180, 180)
+        self.set_default_size(100, 100)
         self.set_decorated(False)
         self.set_focusable(False)
         
@@ -108,7 +108,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.purple = Gtk.Box(name="plasma-purple")
         self.blue = Gtk.Box(name="plasma-blue")
         self.spinner = Gtk.Spinner(name="loading-spinner")
-        self.spinner.set_size_request(60, 60)
+        self.spinner.set_size_request(40, 40)
         self.spinner.set_visible(False)
 
         # Stack layers: Core (bottom) -> Colors -> Spinner (top)
@@ -127,7 +127,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
             #white-core {
                 background: radial-gradient(circle at 30% 30%, #ffffff, #f2f2f7);
                 border-radius: 50%;
-                box-shadow: 0 0 15px rgba(255, 255, 255, 0.4);
+                box-shadow: 0 0 10px rgba(255, 255, 255, 0.4);
             }
             #loading-spinner { color: #007aff; }
         """)
@@ -159,8 +159,8 @@ class RecordingOrb(Gtk.ApplicationWindow):
             self.angles[i] = (self.angles[i] + (self.base_speeds[i] * speed_boost)) % 360
             self.gradient_stops[i] += (self.target_stops[i] - self.gradient_stops[i]) * 0.1
         
-        # Update sizes
-        size = int(85 + (self.vol_smooth * 50))
+        # Update sizes: Base 45px, expands to 85px
+        size = int(45 + (self.vol_smooth * 40))
         for widget in [self.core, self.red, self.purple]:
             widget.set_size_request(size, size)
         self.blue.set_size_request(size + 1, size + 1)
