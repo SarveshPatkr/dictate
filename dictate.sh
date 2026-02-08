@@ -1,54 +1,64 @@
 #!/bin/bash
+"""
+Dictate Pro
+A system-wide dictation tool for Ubuntu (Wayland).
+Control: Super+T to Start, Space to Stop.
+"""
 
-# Configuration
+# 1. Environment & Configuration
 SCRIPT_DIR="$(dirname "$0")"
-if [ -f "$SCRIPT_DIR/.env" ]; then
-    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
-fi
+[ -f "$SCRIPT_DIR/.env" ] && export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
 
-if [ -z "$GROQ_API_KEY" ]; then
-    notify-send "Dictate Error" "GROQ_API_KEY not found in .env"
-    exit 1
-fi
-
-API_KEY="$GROQ_API_KEY"
+# Constants
 LOCK_FILE="/tmp/dictate_recording.pid"
 GUI_FILE="/tmp/dictate_gui.pid"
 LISTENER_FILE="/tmp/dictate_listener.pid"
 AUDIO_FILE="/tmp/dictate_audio.wav"
 DEBUG_LOG="/tmp/dictate_debug.log"
 
+# Helper for logging
 log() { echo "$(date): $1" >> "$DEBUG_LOG"; }
 
+# 2. Dependency Check
+for cmd in pw-record wl-copy curl jq python3; do
+    if ! command -v $cmd &> /dev/null; then
+        notify-send "Dictate Error" "Missing dependency: $cmd"
+        exit 1
+    fi
+done
+
+if [ -z "$GROQ_API_KEY" ]; then
+    notify-send "Dictate Error" "GROQ_API_KEY not found in .env"
+    exit 1
+fi
+
+# 3. Main Toggle Logic
 if [ -f "$LOCK_FILE" ]; then
-    # --- STOP & TRANSCRIBE ---
+    # --- ACTION: STOP & TRANSCRIBE ---
     
-    # 1. Switch Orb to LOADING state
+    # Trigger loading state in UI
     if [ -f "$GUI_FILE" ]; then
         GUI_PID=$(cat "$GUI_FILE")
-        log "Sending USR1 to Orb ($GUI_PID)..."
         kill -USR1 "$GUI_PID" 2>/dev/null
     fi
 
-    # 2. Stop recording cleanly
-    PID=$(cat "$LOCK_FILE")
-    log "Stopping recording ($PID)..."
-    # pw-record stops on SIGINT/SIGTERM and flushes WAV correctly
-    kill -TERM $PID 2>/dev/null
-    wait $PID 2>/dev/null
+    # Stop recording
+    REC_PID=$(cat "$LOCK_FILE")
+    kill -TERM "$REC_PID" 2>/dev/null
+    wait "$REC_PID" 2>/dev/null
     rm "$LOCK_FILE"
     
-    # 2b. Stop Space Listener
+    # Stop Space Listener
     if [ -f "$LISTENER_FILE" ]; then
         L_PID=$(cat "$LISTENER_FILE")
         kill "$L_PID" 2>/dev/null
         rm "$LISTENER_FILE"
     fi
 
-    # 3. Transcribe (Wait for Groq)
-    log "Starting transcription..."
+    # API Call to Groq Whisper
+    log "Transcription started."
     RESPONSE=$(curl -s -X POST "https://api.groq.com/openai/v1/audio/transcriptions" \
-      -H "Authorization: Bearer $API_KEY" \
+      -H "Authorization: Bearer $GROQ_API_KEY" \
       -F "file=@$AUDIO_FILE" \
       -F "model=whisper-large-v3-turbo" \
       -F "temperature=0" \
@@ -56,41 +66,31 @@ if [ -f "$LOCK_FILE" ]; then
 
     TEXT=$(echo "$RESPONSE" | jq -r '.text')
 
-    # 4. Cleanup UI
-    if [ -f "$GUI_FILE" ]; then
-        GUI_PID=$(cat "$GUI_FILE")
-        log "Closing Orb ($GUI_PID)..."
-        kill -TERM "$GUI_PID" 2>/dev/null
-        rm "$GUI_FILE"
-    fi
+    # Shutdown UI
+    [ -f "$GUI_FILE" ] && kill -TERM "$(cat "$GUI_FILE")" 2>/dev/null && rm "$GUI_FILE"
 
     if [ "$TEXT" != "null" ] && [ -n "$TEXT" ]; then
         echo -n "$TEXT" | wl-copy
         notify-send -t 2000 "Dictate" "Copied to clipboard!"
-        log "Success: $TEXT"
+        log "Success: Transcription complete."
     else
-        log "Failed: $RESPONSE"
-        notify-send "Dictate Failed" "Check logs"
+        log "Error: $RESPONSE"
+        notify-send "Dictate Failed" "Check /tmp/dictate_debug.log"
     fi
 
 else
-    # --- START RECORDING ---
-    log "Recording started"
-    # Use pw-record for better mic sharing on Ubuntu 25 (PipeWire)
-    # -p = record
-    # --format=s16 = 16-bit
-    # --rate=16000
-    # --channels=1
+    # --- ACTION: START RECORDING ---
+    log "Session started."
+    
+    # Start PipeWire recording
     pw-record --format=s16 --rate=16000 --channels=1 "$AUDIO_FILE" >/dev/null 2>&1 &
     echo $! > "$LOCK_FILE"
     
-    log "Launching Orb..."
+    # Start Orb UI
     nohup python3 "$SCRIPT_DIR/orb.py" >> "$DEBUG_LOG" 2>&1 &
     echo $! > "$GUI_FILE"
     
     # Start Space Listener
-    if [ -f "$SCRIPT_DIR/space_listener.py" ]; then
-        nohup python3 "$SCRIPT_DIR/space_listener.py" >> "$DEBUG_LOG" 2>&1 &
-        echo $! > "$LISTENER_FILE"
-    fi
+    nohup python3 "$SCRIPT_DIR/space_listener.py" >> "$DEBUG_LOG" 2>&1 &
+    echo $! > "$LISTENER_FILE"
 fi
