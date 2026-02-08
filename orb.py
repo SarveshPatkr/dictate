@@ -11,12 +11,6 @@ import time
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk, Gdk, GLib
 
-LOG_FILE = "/tmp/dictate_debug.log"
-
-def log(msg):
-    with open(LOG_FILE, "a") as f:
-        f.write(f"{time.ctime()}: [Orb] {msg}\n")
-
 class AudioMonitor:
     def __init__(self):
         try:
@@ -60,61 +54,77 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Overlay")
-        self.set_default_size(150, 150)
+        self.set_default_size(200, 200)
         self.set_decorated(False)
         self.set_focusable(False)
         
         self.state = 'recording'
-        self.scale = 1.0
+        self.scale1 = 1.0
+        self.scale2 = 1.0
+        self.scale3 = 1.0
         
-        # 1. Container
-        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.main_box.set_halign(Gtk.Align.CENTER)
-        self.main_box.set_valign(Gtk.Align.CENTER)
+        # Overlay allows us to stack multiple layers for the "Fluid" look
+        self.overlay = Gtk.Overlay()
         
-        # 2. THE ORB / SPINNER Widget
-        # We use a Stack to switch between them
-        self.stack = Gtk.Stack()
-        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        # Layer 1: Outer Blue/Purple Glow
+        self.orb_outer = Gtk.Box()
+        self.orb_outer.add_css_class("orb-outer")
+        self.orb_outer.set_halign(Gtk.Align.CENTER)
+        self.orb_outer.set_valign(Gtk.Align.CENTER)
         
-        # Red Orb
-        self.orb = Gtk.Box()
-        self.orb.add_css_class("orb")
-        self.orb.set_size_request(50, 50)
+        # Layer 2: Mid Pink/Red Glow
+        self.orb_mid = Gtk.Box()
+        self.orb_mid.add_css_class("orb-mid")
+        self.orb_mid.set_halign(Gtk.Align.CENTER)
+        self.orb_mid.set_valign(Gtk.Align.CENTER)
         
-        # Blue Spinner
+        # Layer 3: Core Red
+        self.orb_core = Gtk.Box()
+        self.orb_core.add_css_class("orb-core")
+        self.orb_core.set_halign(Gtk.Align.CENTER)
+        self.orb_core.set_valign(Gtk.Align.CENTER)
+        
+        # Spinner Layer
         self.spinner = Gtk.Spinner()
         self.spinner.add_css_class("spinner")
-        self.spinner.set_size_request(50, 50)
-        
-        self.stack.add_named(self.orb, "orb")
-        self.stack.add_named(self.spinner, "spinner")
-        
-        self.main_box.append(self.stack)
-        self.set_child(self.main_box)
+        self.spinner.set_size_request(60, 60)
+        self.spinner.set_halign(Gtk.Align.CENTER)
+        self.spinner.set_valign(Gtk.Align.CENTER)
+        self.spinner.set_visible(False)
 
-        # 3. APPLE STYLE CSS
+        self.overlay.set_child(self.orb_outer)
+        self.overlay.add_overlay(self.orb_mid)
+        self.overlay.add_overlay(self.orb_core)
+        self.overlay.add_overlay(self.spinner)
+        
+        self.set_child(self.overlay)
+
+        # CSS for Layered Siri Look
         css_provider = Gtk.CssProvider()
         css_provider.load_from_data(b"""
-            window { 
-                background-color: transparent; 
+            window { background-color: transparent; }
+            .orb-outer {
+                background: radial-gradient(circle, rgba(0, 122, 255, 0.4) 0%, rgba(0, 122, 255, 0) 70%);
+                border-radius: 50%;
+                min-width: 120px; min-height: 120px;
+                transition: all 0.2s cubic-bezier(0.1, 0.7, 0.1, 1);
             }
-            .orb {
+            .orb-mid {
+                background: radial-gradient(circle, rgba(255, 45, 85, 0.6) 0%, rgba(255, 45, 85, 0) 70%);
+                border-radius: 50%;
+                min-width: 90px; min-height: 90px;
+                transition: all 0.15s cubic-bezier(0.1, 0.7, 0.1, 1);
+            }
+            .orb-core {
                 background: radial-gradient(circle at 30% 30%, #ff5e57, #ff3b30);
                 border-radius: 50%;
-                box-shadow: 0 0 20px rgba(255, 59, 48, 0.6), 
-                            inset 0 0 10px rgba(255, 255, 255, 0.2);
-                transition: min-width 0.1s ease-out, min-height 0.1s ease-out;
+                min-width: 50px; min-height: 50px;
+                box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.3);
+                transition: all 0.1s cubic-bezier(0.1, 0.7, 0.1, 1);
             }
-            .spinner {
-                color: #007aff;
-            }
+            .spinner { color: #007aff; }
         """)
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(),
-            css_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.monitor = AudioMonitor()
         GLib.timeout_add(30, self.update_ui)
@@ -122,23 +132,37 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def update_ui(self):
         if self.state == 'recording':
             vol = self.monitor.get_volume()
-            # Noise Gate
-            if vol < 0.48:
-                target_scale = 1.0
+            
+            # Independent scaling for "Fluid" effect
+            # Threshold 0.45
+            if vol < 0.45:
+                t1, t2, t3 = 1.0, 1.0, 1.0
             else:
-                target_scale = 1.0 + (vol * 1.5)
+                # Core reacts most
+                t3 = 1.0 + (vol * 1.8)
+                # Mid reacts with lag
+                t2 = 1.0 + (vol * 1.4)
+                # Outer reacts least
+                t1 = 1.0 + (vol * 1.0)
             
             # Easing
-            self.scale += (target_scale - self.scale) * 0.3
-            size = int(50 * self.scale)
-            self.orb.set_size_request(size, size)
+            self.scale1 += (t1 - self.scale1) * 0.2
+            self.scale2 += (t2 - self.scale2) * 0.3
+            self.scale3 += (t3 - self.scale3) * 0.4
+            
+            self.orb_outer.set_size_request(int(120 * self.scale1), int(120 * self.scale1))
+            self.orb_mid.set_size_request(int(90 * self.scale2), int(90 * self.scale2))
+            self.orb_core.set_size_request(int(50 * self.scale3), int(50 * self.scale3))
+            
         return True
 
     def start_loading(self):
-        log("Transitioning to Spinner...")
         self.state = 'loading'
         self.monitor.stop()
-        self.stack.set_visible_child_name("spinner")
+        self.orb_outer.set_visible(False)
+        self.orb_mid.set_visible(False)
+        self.orb_core.set_visible(False)
+        self.spinner.set_visible(True)
         self.spinner.start()
 
 class OrbApp(Gtk.Application):
@@ -153,8 +177,7 @@ class OrbApp(Gtk.Application):
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_sigterm)
 
     def on_sigusr1(self):
-        if self.win:
-            GLib.idle_add(self.win.start_loading)
+        if self.win: GLib.idle_add(self.win.start_loading)
         return True
 
     def on_sigterm(self):
