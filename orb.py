@@ -7,16 +7,9 @@ import struct
 import threading
 import pyaudio
 import time
-import cairo
 
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk, Gdk, GLib
-
-LOG_FILE = "/tmp/dictate_debug.log"
-
-def log(msg):
-    with open(LOG_FILE, "a") as f:
-        f.write(f"{time.ctime()}: [Orb] {msg}\n")
 
 class AudioMonitor:
     def __init__(self):
@@ -27,8 +20,7 @@ class AudioMonitor:
                                       rate=16000,
                                       input=True,
                                       frames_per_buffer=1024)
-        except Exception as e:
-            log(f"Mic error: {e}")
+        except Exception:
             self.p = None
         self.current_volume = 0
         self.running = True
@@ -46,9 +38,6 @@ class AudioMonitor:
                 self.current_volume = min(max(level, 0), 1.0)
             except Exception: pass
                 
-    def get_volume(self):
-        return self.current_volume
-
     def stop(self):
         self.running = False
         if self.p:
@@ -62,73 +51,67 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Overlay")
-        self.set_default_size(100, 100)
+        self.set_default_size(80, 80)
         self.set_decorated(False)
         self.set_focusable(False)
         
-        self.state = 'recording'
-        self.angle = 0
-        self.scale = 1.0
+        # UI Stack to switch between Orb and Spinner
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.stack.set_transition_duration(300)
         
-        # Transparent background setup
-        self.set_app_paintable = True
+        # 1. THE RED ORB
+        self.orb_box = Gtk.Box()
+        self.orb_box.set_halign(Gtk.Align.CENTER)
+        self.orb_box.set_valign(Gtk.Align.CENTER)
+        self.orb = Gtk.Box()
+        self.orb.add_css_class("red-orb")
+        self.orb.set_size_request(40, 40)
+        self.orb_box.append(self.orb)
         
-        self.area = Gtk.DrawingArea()
-        self.area.set_draw_func(self.on_draw)
-        self.set_child(self.area)
+        # 2. THE SPINNER
+        self.spinner_box = Gtk.Box()
+        self.spinner_box.set_halign(Gtk.Align.CENTER)
+        self.spinner_box.set_valign(Gtk.Align.CENTER)
+        self.spinner = Gtk.Spinner()
+        self.spinner.set_size_request(40, 40)
+        self.spinner_box.append(self.spinner)
+        
+        self.stack.add_named(self.orb_box, "orb")
+        self.stack.add_named(self.spinner_box, "spinner")
+        self.set_child(self.stack)
+
+        # CSS for Red Orb
+        css_provider = Gtk.CssProvider()
+        css_provider.load_from_data(b"""
+            window { background-color: transparent; }
+            .red-orb {
+                background-color: #ff3b30;
+                border-radius: 50%;
+                box-shadow: 0 0 15px rgba(255, 59, 48, 0.6);
+            }
+        """)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
         self.monitor = AudioMonitor()
-        GLib.timeout_add(20, self.tick)
+        GLib.timeout_add(30, self.update_orb)
 
-    def on_draw(self, area, cr, width, height):
-        cx, cy = width / 2, height / 2
-        
-        # Ensure window background is transparent
-        # In GTK4, we rely on the CSS/Compositor usually, but for Cairo:
-        cr.set_operator(cairo.OPERATOR_SOURCE)
-        cr.set_source_rgba(0, 0, 0, 0)
-        cr.paint()
-        cr.set_operator(cairo.OPERATOR_OVER)
-
-        if self.state == 'recording':
-            radius = 20 * self.scale
-            cr.set_source_rgba(1.0, 0.23, 0.18, 1.0) # #ff3b30
-            cr.arc(cx, cy, radius, 0, 2 * math.pi)
-            cr.fill()
-            
-            cr.set_source_rgba(1.0, 0.23, 0.18, 0.3)
-            cr.arc(cx, cy, radius + 5, 0, 2 * math.pi)
-            cr.fill()
-            
-        else:
-            radius = 20
-            cr.set_line_width(4)
-            cr.set_source_rgba(0.0, 0.48, 1.0, 0.2) # #007aff alpha
-            cr.arc(cx, cy, radius, 0, 2 * math.pi)
-            cr.stroke()
-            
-            cr.set_source_rgba(0.0, 0.48, 1.0, 1.0) # #007aff
-            start_angle = self.angle
-            end_angle = self.angle + (math.pi * 0.7)
-            cr.arc(cx, cy, radius, start_angle, end_angle)
-            cr.stroke()
-
-    def tick(self):
-        if self.state == 'recording':
+    def update_orb(self):
+        if self.stack.get_visible_child_name() == "orb":
             vol = self.monitor.get_volume()
-            target_scale = 1.0 + (vol * 1.0) if vol > 0.45 else 1.0
-            self.scale += (target_scale - self.scale) * 0.3
-        else:
-            self.angle += 0.2
-            if self.angle > 2 * math.pi:
-                self.angle -= 2 * math.pi
-        
-        self.area.queue_draw()
+            scale = 1.0 + (vol * 1.0) if vol > 0.45 else 1.0
+            size = int(40 * scale)
+            self.orb.set_size_request(size, size)
         return True
 
     def start_loading(self):
-        self.state = 'loading'
         self.monitor.stop()
+        self.stack.set_visible_child_name("spinner")
+        self.spinner.start()
 
 class OrbApp(Gtk.Application):
     def __init__(self):
