@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import signal
 import gi
@@ -5,9 +6,16 @@ import math
 import struct
 import threading
 import pyaudio
+import time
 
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk, Gdk, GLib
+
+LOG_FILE = "/tmp/dictate_debug.log"
+
+def log(msg):
+    with open(LOG_FILE, "a") as f:
+        f.write(f"{time.ctime()}: [Orb] {msg}\n")
 
 class AudioMonitor:
     def __init__(self):
@@ -19,7 +27,7 @@ class AudioMonitor:
                                       input=True,
                                       frames_per_buffer=1024)
         except Exception as e:
-            print(f"Mic error: {e}")
+            log(f"Mic error: {e}")
             self.p = None
             
         self.current_volume = 0
@@ -49,9 +57,12 @@ class AudioMonitor:
     def stop(self):
         self.running = False
         if self.p:
-            self.stream.stop_stream()
-            self.stream.close()
-            self.p.terminate()
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+                self.p.terminate()
+            except:
+                pass
 
 class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
@@ -61,10 +72,8 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.set_decorated(False)
         self.set_focusable(False)
         
-        # State: 'recording' or 'loading'
         self.state = 'recording'
         
-        # CSS Styles
         self.css_provider = Gtk.CssProvider()
         self.apply_css()
         Gtk.StyleContext.add_provider_for_display(
@@ -99,16 +108,16 @@ class RecordingOrb(Gtk.ApplicationWindow):
                     transition: all 0.2s ease;
                 }
             """
-        else: # Loading bar state
+        else:
             css = b"""
                 window { background-color: transparent; }
                 .orb {
                     background-color: #007aff;
                     border-radius: 5px;
                     min-width: 200px;
-                    min-height: 8px;
+                    min-height: 10px;
                     box-shadow: 0 0 10px rgba(0, 122, 255, 0.4);
-                    transition: all 0.4s ease;
+                    transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
                 }
             """
         self.css_provider.load_from_data(css)
@@ -120,20 +129,16 @@ class RecordingOrb(Gtk.ApplicationWindow):
             size = int(self.base_size * scale)
             self.orb.set_size_request(size, size)
         else:
-            # Pulsate the loading bar width slightly
-            pulse = 200 + (math.sin(time.time() * 10) * 20)
-            self.orb.set_size_request(int(pulse), 8)
+            pulse = 200 + (math.sin(time.time() * 8) * 15)
+            self.orb.set_size_request(int(pulse), 10)
         return True
 
     def start_loading(self):
+        log("Transitioning to LOADING state...")
         self.state = 'loading'
-        self.monitor.stop() # Stop mic while loading
+        self.monitor.stop()
         self.apply_css()
 
-    def cleanup(self):
-        self.monitor.stop()
-
-import time
 class OrbApp(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="com.openclaw.dictate.orb")
@@ -143,22 +148,23 @@ class OrbApp(Gtk.Application):
         self.win = RecordingOrb(self)
         self.win.present()
         
-    def trigger_loading(self):
+        # Set up signal handlers within GLib loop
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, self.on_sigusr1)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_sigterm)
+
+    def on_sigusr1(self):
+        log("Received SIGUSR1")
         if self.win:
-            GLib.idle_add(self.win.start_loading)
+            self.win.start_loading()
+        return True
+
+    def on_sigterm(self):
+        log("Received SIGTERM, shutting down.")
+        if self.win:
+            self.win.monitor.stop()
+        self.quit()
+        return False
 
 if __name__ == "__main__":
     app = OrbApp()
-    
-    # SIGUSR1 will trigger the loading state
-    def sigusr1_handler(signum, frame):
-        app.trigger_loading()
-        
-    def sigterm_handler(signum, frame):
-        if app.win: app.win.cleanup()
-        sys.exit(0)
-        
-    signal.signal(signal.SIGUSR1, sigusr1_handler)
-    signal.signal(signal.SIGTERM, sigterm_handler)
-    
     app.run(None)

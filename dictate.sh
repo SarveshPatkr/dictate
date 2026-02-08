@@ -23,14 +23,16 @@ log() { echo "$(date): $1" >> "$DEBUG_LOG"; }
 if [ -f "$LOCK_FILE" ]; then
     # --- STOP & TRANSCRIBE ---
     
-    # 1. Switch Orb to LOADING state (Blue bar)
+    # 1. Switch Orb to LOADING state
     if [ -f "$GUI_FILE" ]; then
         GUI_PID=$(cat "$GUI_FILE")
+        log "Sending USR1 to Orb ($GUI_PID)..."
         kill -USR1 "$GUI_PID" 2>/dev/null
     fi
 
     # 2. Stop recording cleanly
     PID=$(cat "$LOCK_FILE")
+    log "Stopping recording ($PID)..."
     kill -TERM $PID 2>/dev/null
     wait $PID 2>/dev/null
     rm "$LOCK_FILE"
@@ -42,7 +44,8 @@ if [ -f "$LOCK_FILE" ]; then
         rm "$LISTENER_FILE"
     fi
 
-    # 3. Transcribe (No notification anymore!)
+    log "Starting transcription..."
+    # 3. Transcribe (Wait for Groq)
     RESPONSE=$(curl -s -X POST "https://api.groq.com/openai/v1/audio/transcriptions" \
       -H "Authorization: Bearer $API_KEY" \
       -F "file=@$AUDIO_FILE" \
@@ -52,9 +55,11 @@ if [ -f "$LOCK_FILE" ]; then
 
     TEXT=$(echo "$RESPONSE" | jq -r '.text')
 
-    # 4. Cleanup UI (Kill Orb now)
+    # 4. Cleanup UI (Kill Orb now that we are done)
     if [ -f "$GUI_FILE" ]; then
-        kill $(cat "$GUI_FILE") 2>/dev/null
+        GUI_PID=$(cat "$GUI_FILE")
+        log "Closing Orb ($GUI_PID)..."
+        kill -TERM "$GUI_PID" 2>/dev/null
         rm "$GUI_FILE"
     fi
 
@@ -63,22 +68,23 @@ if [ -f "$LOCK_FILE" ]; then
         notify-send -t 2000 "Dictate" "Copied to clipboard!"
         log "Success: $TEXT"
     else
+        log "Failed: $RESPONSE"
         notify-send "Dictate Failed" "Check logs"
     fi
 
 else
     # --- START RECORDING ---
+    log "Recording started"
     arecord -D default -f S16_LE -c 1 -r 16000 -d 120 "$AUDIO_FILE" -q &
     echo $! > "$LOCK_FILE"
     
-    nohup python3 "$SCRIPT_DIR/orb.py" >/dev/null 2>&1 &
+    log "Launching Orb..."
+    nohup python3 "$SCRIPT_DIR/orb.py" >> "$DEBUG_LOG" 2>&1 &
     echo $! > "$GUI_FILE"
     
     # Start Space Listener
     if [ -f "$SCRIPT_DIR/space_listener.py" ]; then
-        nohup python3 "$SCRIPT_DIR/space_listener.py" >/dev/null 2>&1 &
+        nohup python3 "$SCRIPT_DIR/space_listener.py" >> "$DEBUG_LOG" 2>&1 &
         echo $! > "$LISTENER_FILE"
     fi
-    
-    log "Recording started"
 fi
