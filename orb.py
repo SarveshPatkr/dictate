@@ -55,49 +55,51 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Overlay")
-        self.set_default_size(250, 250)
+        self.set_default_size(300, 300)
         self.set_decorated(False)
         self.set_focusable(False)
         
         self.state = 'recording'
         self.vol_smooth = 0
         
-        # Random speeds and directions
-        self.angles = [random.randint(0,360) for _ in range(3)]
-        self.base_speeds = [random.uniform(2, 6) * random.choice([-1, 1]) for _ in range(3)]
+        # State for rotation
+        self.angles = [0, 0, 0]
+        self.base_speeds = [0, 0, 0]
+        self.randomize_speeds()
         
         self.overlay = Gtk.Overlay()
         
-        # --- LAYER ORDER (Back to Front) ---
+        # --- LAYER ORDER (Bottom to Top) ---
         
-        # 1. Blue Plasma (Largest - Bottom)
-        self.blue = Gtk.Box()
-        self.blue.add_css_class("plasma-blue")
+        # 1. White Core (Canvas - BOTTOM)
+        self.core = Gtk.Box()
+        self.core.add_css_class("white-core")
+        self.core_base_size = 85
+        self.core.set_size_request(self.core_base_size, self.core_base_size)
         
-        # 2. Purple Plasma (Middle)
-        self.purple = Gtk.Box()
-        self.purple.add_css_class("plasma-purple")
-        
-        # 3. Red Plasma (Innermost - closest to core)
+        # 2. Red Plasma (Smallest - On Top)
         self.red = Gtk.Box()
         self.red.add_css_class("plasma-red")
         
-        # 4. White Core (TOP - Front)
-        self.core = Gtk.Box()
-        self.core.add_css_class("white-core")
-        self.core_base_size = 70
-        self.core.set_size_request(self.core_base_size, self.core_base_size)
+        # 3. Purple Plasma (Medium - On Top)
+        self.purple = Gtk.Box()
+        self.purple.add_css_class("plasma-purple")
+        
+        # 4. Blue Plasma (Largest - Overflowing 8px - On Top)
+        self.blue = Gtk.Box()
+        self.blue.add_css_class("plasma-blue")
         
         # Spinner
         self.spinner = Gtk.Spinner()
         self.spinner.set_size_request(60, 60)
         self.spinner.set_visible(False)
 
-        # Assemble: Blue first (bottom), then Purple, then Red, then Core (top)
-        self.overlay.set_child(self.blue)
-        self.overlay.add_overlay(self.purple)
+        # Assemble: Core at bottom
+        self.overlay.set_child(self.core)
+        # Colors on TOP
         self.overlay.add_overlay(self.red)
-        self.overlay.add_overlay(self.core)
+        self.overlay.add_overlay(self.purple)
+        self.overlay.add_overlay(self.blue)
         self.overlay.add_overlay(self.spinner)
         
         for w in [self.blue, self.purple, self.red, self.core, self.spinner]:
@@ -110,7 +112,15 @@ class RecordingOrb(Gtk.ApplicationWindow):
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.monitor = AudioMonitor()
+        
+        # Timers
         GLib.timeout_add(30, self.update_ui)
+        GLib.timeout_add(1000, self.randomize_speeds) # Change randomness every second
+
+    def randomize_speeds(self):
+        # Really slow when idle
+        self.base_speeds = [random.uniform(0.5, 1.5) * random.choice([-1, 1]) for _ in range(3)]
+        return True
 
     def update_ui(self):
         if self.state == 'recording':
@@ -119,49 +129,55 @@ class RecordingOrb(Gtk.ApplicationWindow):
             self.vol_smooth += (vol - self.vol_smooth) * 0.2
             
             # 1. Randomized & Audio-Reactive Rotation
-            speed_boost = 1.0 + (self.vol_smooth * 5.0)
-            for i in range(3):
-                self.angles[i] = (self.angles[i] + (self.base_speeds[i] * speed_boost)) % 360
+            speed_boost = 1.0 + (self.vol_smooth * 8.0)
             
-            # 2. Tight radius gaps (Core at 70px)
-            # Blue (Largest): ~105px
-            # Purple (Middle): ~90px
-            # Red (Innermost): ~80px
-            s_core = int(self.core_base_size + self.vol_smooth * 20)
-            s_blue = int(s_core + 30 + self.vol_smooth * 40)
-            s_purple = int(s_core + 15 + self.vol_smooth * 25)
-            s_red = int(s_core + 5 + self.vol_smooth * 15)
+            # Select one random layer to boost even more if talking
+            boost_index = random.randint(0, 2) if vol > 0.5 else -1
+            
+            for i in range(3):
+                current_speed = self.base_speeds[i] * speed_boost
+                if i == boost_index:
+                    current_speed *= 2.0
+                self.angles[i] = (self.angles[i] + current_speed) % 360
+            
+            # 2. Size Logic
+            # Core: 85px (Static)
+            # Blue: Core + 8px (93px)
+            # Purple: Core - 10px (75px)
+            # Red: Core - 25px (60px)
+            
+            s_core = self.core_base_size
+            s_blue = int(s_core + 8 + (self.vol_smooth * 15))
+            s_purple = int(s_core - 10 + (self.vol_smooth * 10))
+            s_red = int(s_core - 25 + (self.vol_smooth * 5))
             
             self.core.set_size_request(s_core, s_core)
             self.blue.set_size_request(s_blue, s_blue)
             self.purple.set_size_request(s_purple, s_purple)
             self.red.set_size_request(s_red, s_red)
 
-            # 3. CSS with Patchy Conic Gradients
+            # 3. CSS
             css = f"""
                 window {{ background-color: transparent; }}
                 .white-core {{
                     background: radial-gradient(circle at 30% 30%, #ffffff, #f2f2f7);
                     border-radius: 50%;
-                    box-shadow: 0 0 20px rgba(255, 255, 255, 0.8), inset 0 0 10px rgba(0,0,0,0.05);
+                    box-shadow: 0 0 15px rgba(255, 255, 255, 0.4);
                 }}
-                .plasma-red {{
-                    background: conic-gradient(from {self.angles[0]}deg, #ff3b30 0%, transparent 20%, #ff9500 40%, transparent 70%, #ff3b30 100%);
+                .plasma-blue {{
+                    background: conic-gradient(from {self.angles[0]}deg, rgba(0, 122, 255, 0.6) 0%, transparent 40%, rgba(90, 200, 250, 0.4) 60%, transparent 90%);
                     border-radius: 50%;
-                    opacity: 0.8;
                     filter: blur(2px);
                 }}
                 .plasma-purple {{
-                    background: conic-gradient(from {self.angles[1]}deg, #5856d6 0%, transparent 25%, #af52de 50%, transparent 75%, #5856d6 100%);
+                    background: conic-gradient(from {self.angles[1]}deg, rgba(88, 86, 214, 0.5) 0%, transparent 25%, rgba(175, 82, 222, 0.3) 50%, transparent 75%);
                     border-radius: 50%;
-                    opacity: 0.6;
-                    filter: blur(4px);
+                    filter: blur(3px);
                 }}
-                .plasma-blue {{
-                    background: conic-gradient(from {self.angles[2]}deg, #007aff 0%, transparent 35%, #5ac8fa 65%, transparent 90%, #007aff 100%);
+                .plasma-red {{
+                    background: conic-gradient(from {self.angles[2]}deg, rgba(255, 59, 48, 0.7) 0%, transparent 30%, rgba(255, 149, 0, 0.5) 50%, transparent 80%);
                     border-radius: 50%;
-                    opacity: 0.4;
-                    filter: blur(6px);
+                    filter: blur(1px);
                 }}
                 .spinner {{ color: #007aff; }}
             """.encode()
@@ -179,7 +195,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
 class OrbApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="com.openclaw.dictate.plasma.v4.orb")
+        super().__init__(application_id="com.openclaw.dictate.plasma.v5.orb")
         self.win = None
 
     def do_activate(self):
