@@ -16,6 +16,7 @@ fi
 API_KEY="$GROQ_API_KEY"
 LOCK_FILE="/tmp/dictate_recording.pid"
 GUI_FILE="/tmp/dictate_gui.pid"
+LISTENER_FILE="/tmp/dictate_listener.pid"
 AUDIO_FILE="/tmp/dictate_audio.wav"
 DEBUG_LOG="/tmp/dictate_debug.log"
 
@@ -38,6 +39,13 @@ if [ -f "$LOCK_FILE" ]; then
         GUI_PID=$(cat "$GUI_FILE")
         kill "$GUI_PID" 2>/dev/null
         rm "$GUI_FILE"
+    fi
+
+    # 1b. Kill the Space Listener
+    if [ -f "$LISTENER_FILE" ]; then
+        LISTENER_PID=$(cat "$LISTENER_FILE")
+        kill "$LISTENER_PID" 2>/dev/null
+        rm "$LISTENER_FILE"
     fi
 
     # 2. Kill the recording process nicely (SIGTERM allows arecord to fix WAV header)
@@ -87,6 +95,12 @@ else
     if [ -f "$SCRIPT_DIR/orb.py" ]; then
         nohup python3 "$SCRIPT_DIR/orb.py" >/dev/null 2>&1 &
         echo $! > "$GUI_FILE"
+    fi
+
+    # Launch Space Listener
+    if [ -f "$SCRIPT_DIR/space_listener.py" ]; then
+        nohup python3 "$SCRIPT_DIR/space_listener.py" >/dev/null 2>&1 &
+        echo $! > "$LISTENER_FILE"
     fi
     
     log "Started recording"
