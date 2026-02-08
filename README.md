@@ -1,77 +1,56 @@
-# Dictate Pro for Linux 🎙️
+# Speech-to-Text Ubuntu / Linux (Groq AI Whisper) 🎙️
 
-A high-performance, system-wide dictation tool for Linux (Ubuntu/Wayland). **Dictate Pro** brings a professional, Siri-inspired voice-to-text experience to your desktop, powered by Groq's blazing-fast Whisper API.
-
----
-
-## ✨ Features
-- **Instant Processing**: Near-instant (Not real time) transcription (usually under 10 second) using Groq Cloud.
-- **Global Control**: Start with a hotkey, stop with the **Space Bar**.
-- **Privacy First**: Local control, no telemetry, and uses your own private API key.
+A lightweight, system-wide **Linux dictation tool** for Ubuntu and other distributions. This tool provides near-instant **voice-to-text** (STT) capabilities in every application using the high-speed **Groq API**.
 
 ---
 
-## 🛠️ System Requirements
-- **OS**: Ubuntu 22.04+ (Works best on Wayland)
-- **Audio**: PipeWire or PulseAudio
-- **Internet**: Required for the Groq API call
+## 🚀 Key Features
+
+- **Voice to Text for Ubuntu**: Works system-wide—use your voice to type in any app (Browser, WhatsApp, IDE, Terminal).
+- **Fastest Speech to Text Linux**: Leverages Groq Cloud (Whisper Large V3 Turbo) for sub-second transcription speeds.
+- **Linux Voice Typing Shortcut**: Trigger recording with a hotkey and stop with the space bar for a seamless workflow.
+- **Wayland & X11 Compatible**: Native support for modern Ubuntu (Wayland) using `wl-clipboard`.
+- **Free Linux STT**: A powerful, open-source alternative to proprietary dictation software.
 
 ---
 
-## 🚀 Installation & Setup
+## 🛠️ Installation & Setup
 
 ### 1. Install Dependencies
-Run the following command to install the required system tools:
 ```bash
 sudo apt update && sudo apt install -y wl-clipboard libnotify-bin alsa-utils curl jq python3-pyaudio python3-evdev
 ```
 
-### 2. Set Up Persistent Permissions
-For the "Stop on Space" feature to work every time you restart your computer, you must install this udev rule:
+### 2. Set Up Permanent Permissions
+Ensures the "Stop on Space" feature works after a restart:
 ```bash
 sudo bash -c 'echo "KERNEL==\"event*\", NAME=\"input/%k\", MODE=\"0666\", GROUP=\"input\"" > /etc/udev/rules.d/99-dictate-input.rules'
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-### 3. Configure your API Key
-1. Get a free API key from [Groq Cloud Console](https://console.groq.com/).
-2. In the project folder, create or edit the `.env` file:
+### 3. Configure API Key
+Create a `.env` file in the project folder:
 ```bash
 GROQ_API_KEY=your_key_here
 ```
 
-### 4. Create the Keyboard Shortcut
+### 4. Create Keyboard Shortcut
 1. Open **Settings** -> **Keyboard** -> **View and Customize Shortcuts**.
-2. Scroll to the bottom and select **Custom Shortcuts** -> **Add Shortcut**.
-3. Fill in:
-   - **Name**: `Dictate Pro`
-   - **Command**: `/home/<username>/Desktop/dictate/dictate.sh`
-   - **Shortcut**: Press **Super + T** (or your preferred key).
+2. Scroll to **Custom Shortcuts** -> **Add Shortcut**.
+   - **Name**: `Linux Speech-to-Text`
+   - **Command**: `/home/spatkar/Desktop/dictate/dictate.sh`
+   - **Shortcut**: `Super + T`
 
 ---
 
-## 📂 Usage
+## 📂 How to Use
 
-1. **Start Recording**: Press `Super + T`.
-2. **Talk**: Watch the beautiful energy pearl react to your voice.
-3. **Stop & Transcribe**: Tap the **Space Bar** (or press Super+T again).
-4. **Paste**: The text is instantly in your clipboard. Press `Ctrl + V` anywhere.
-
----
-
-## 🧠 Technical Details
-
-- **Backend**: Pure Bash logic for maximum speed and zero runtime overhead.
-- **Frontend**: Python 3 + GTK4 + Cairo for high-performance, hardware-accelerated animations.
-- **Audio Engine**: `pw-record` (PipeWire) for native, low-latency audio capture.
-- **State Management**: Uses a PID-based lock system to toggle between recording and processing states.
+1. **Start**: Press `Super + T`.
+2. **Talk**: A visual energy orb appears while you speak.
+3. **Stop**: Tap the **Space Bar** (or Super+T again).
+4. **Paste**: The text is copied to your clipboard instantly. Press `Ctrl + V`.
 
 ---
 
-## 🔒 Security & Privacy
-Dictate Pro stores your API key locally in a `.env` file which is automatically ignored by Git to prevent accidental exposure. Audio is captured to a temporary file in `/tmp` and deleted immediately after transcription.
-
----
-
-## 📄 License
-This project is open-source. Feel free to fork, tweak, and make it your own!
+## 🧠 Technical Overview
+Built using **Bash** and **Python 3**. It uses **PipeWire (`pw-record`)** for audio capture and the **Groq API** for high-performance AI inference. Designed specifically for **Ubuntu Linux** users who need a fast, reliable dictation tool.
