@@ -1,11 +1,9 @@
 #!/bin/bash
-# Dictate Pro
-# A system-wide dictation tool for Ubuntu (Wayland).
-# Control: Super+T to Start, Space to Stop.
+# Dictate Pro - 100% Local Offline Dictation
+# Control: Super+T to Start, Space or Confirm [✓] to Stop.
 
 # 1. Environment & Configuration
 SCRIPT_DIR="$(dirname "$0")"
-[ -f "$SCRIPT_DIR/.env" ] && export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
 
 # Constants
 LOCK_FILE="/tmp/dictate_recording.pid"
@@ -18,17 +16,12 @@ DEBUG_LOG="/tmp/dictate_debug.log"
 log() { echo "$(date): $1" >> "$DEBUG_LOG"; }
 
 # 2. Dependency Check
-for cmd in pw-record wl-copy curl jq python3; do
+for cmd in pw-record wl-copy python3; do
     if ! command -v $cmd &> /dev/null; then
         notify-send "Dictate Error" "Missing dependency: $cmd"
         exit 1
     fi
 done
-
-if [ -z "$GROQ_API_KEY" ]; then
-    notify-send "Dictate Error" "GROQ_API_KEY not found in .env"
-    exit 1
-fi
 
 # 3. Main Toggle Logic
 if [ "$1" == "--cancel" ]; then
@@ -41,7 +34,7 @@ if [ "$1" == "--cancel" ]; then
 fi
 
 if [ -f "$LOCK_FILE" ]; then
-    # --- ACTION: STOP & TRANSCRIBE ---
+    # --- ACTION: STOP & TRANSCRIBE (100% LOCAL OFFLINE) ---
     
     # Trigger loading state in UI
     if [ -f "$GUI_FILE" ]; then
@@ -53,36 +46,28 @@ if [ -f "$LOCK_FILE" ]; then
     REC_PID=$(cat "$LOCK_FILE")
     kill -TERM "$REC_PID" 2>/dev/null
     wait "$REC_PID" 2>/dev/null
-    rm "$LOCK_FILE"
+    rm -f "$LOCK_FILE"
     
     # Stop Space Listener
     if [ -f "$LISTENER_FILE" ]; then
         L_PID=$(cat "$LISTENER_FILE")
         kill "$L_PID" 2>/dev/null
-        rm "$LISTENER_FILE"
+        rm -f "$LISTENER_FILE"
     fi
 
-    # API Call to Groq Whisper
-    log "Transcription started."
-    RESPONSE=$(curl -s -X POST "https://api.groq.com/openai/v1/audio/transcriptions" \
-      -H "Authorization: Bearer $GROQ_API_KEY" \
-      -F "file=@$AUDIO_FILE" \
-      -F "model=whisper-large-v3-turbo" \
-      -F "temperature=0" \
-      -F "response_format=json")
-
-    TEXT=$(echo "$RESPONSE" | jq -r '.text')
+    # 100% Local Offline Transcription
+    log "Local transcription started."
+    TEXT=$(python3 "$SCRIPT_DIR/local_transcribe.py" "$AUDIO_FILE" 2>> "$DEBUG_LOG")
 
     # Shutdown UI
-    [ -f "$GUI_FILE" ] && kill -TERM "$(cat "$GUI_FILE")" 2>/dev/null && rm "$GUI_FILE"
+    [ -f "$GUI_FILE" ] && kill -TERM "$(cat "$GUI_FILE")" 2>/dev/null && rm -f "$GUI_FILE"
 
-    if [ "$TEXT" != "null" ] && [ -n "$TEXT" ]; then
+    if [ -n "$TEXT" ]; then
         echo -n "$TEXT" | wl-copy
-        notify-send -t 2000 "Dictate" "Copied to clipboard!"
-        log "Success: Transcription complete."
+        notify-send -t 2000 "Dictate (100% Local)" "Copied to clipboard!"
+        log "Success: Local transcription complete ($TEXT)."
     else
-        log "Error: $RESPONSE"
-        notify-send "Dictate Failed" "Check /tmp/dictate_debug.log"
+        log "Notice: No speech detected in audio."
     fi
 
 else
