@@ -225,49 +225,20 @@ class LocalStreamingTranscriber:
             beam_size=1,
             temperature=0.0,
             no_speech_threshold=0.6,
-            logprob_threshold=-1.0,
+            log_prob_threshold=-1.0,
             condition_on_previous_text=False
         )
         
         seg_list = list(segments)
         if not seg_list:
-            # If silent, NEVER wipe out previous text! Keep confirmed text on screen.
             return
 
-        committed_parts = []
-        live_tail = ""
-        
-        for i, seg in enumerate(seg_list):
-            txt = seg.text.strip()
-            if not txt:
-                continue
-            # If segment is finished before current audio tail or not the last segment, lock it!
-            if i < len(seg_list) - 1 or (dur - seg.end) > 0.4:
-                committed_parts.append(txt)
-            else:
-                live_tail = txt
-        
-        if committed_parts:
-            new_confirmed = " ".join(committed_parts).strip()
-            if len(new_confirmed) >= len(self.confirmed_text):
-                self.confirmed_text = new_confirmed
-                
-        if live_tail and live_tail not in self.confirmed_text:
-            self.current_live_tail = live_tail
-        else:
-            self.current_live_tail = ""
+        detected_parts = [s.text.strip() for s in seg_list if s.text.strip()]
+        if not detected_parts:
+            return
             
-        # Stable compound display string
-        if self.confirmed_text and self.current_live_tail:
-            full_display = f"{self.confirmed_text} {self.current_live_tail}".strip()
-        elif self.confirmed_text:
-            full_display = self.confirmed_text
-        elif self.current_live_tail:
-            full_display = self.current_live_tail
-        else:
-            return
-
-        if full_display != self.last_emitted_text:
+        full_display = " ".join(detected_parts).strip()
+        if full_display and full_display != self.last_emitted_text:
             self.last_emitted_text = full_display
             GLib.idle_add(self.on_text_update, full_display)
 
