@@ -2,3 +2,5 @@
 *.log
 *.wav
 *.pid
+__pycache__/
+models/

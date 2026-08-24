@@ -31,6 +31,15 @@ if [ -z "$GROQ_API_KEY" ]; then
 fi
 
 # 3. Main Toggle Logic
+if [ "$1" == "--cancel" ]; then
+    log "Session cancelled by user."
+    [ -f "$LOCK_FILE" ] && kill -TERM "$(cat "$LOCK_FILE")" 2>/dev/null && rm -f "$LOCK_FILE"
+    [ -f "$LISTENER_FILE" ] && kill "$(cat "$LISTENER_FILE")" 2>/dev/null && rm -f "$LISTENER_FILE"
+    [ -f "$GUI_FILE" ] && kill -TERM "$(cat "$GUI_FILE")" 2>/dev/null && rm -f "$GUI_FILE"
+    rm -f "$AUDIO_FILE"
+    exit 0
+fi
+
 if [ -f "$LOCK_FILE" ]; then
     # --- ACTION: STOP & TRANSCRIBE ---
     
