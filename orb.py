@@ -173,19 +173,19 @@ class LocalStreamingTranscriber:
         """Loads faster-whisper model for responsive live streaming."""
         try:
             from faster_whisper import WhisperModel
-            log("Initializing faster-whisper (tiny, int8, CPU)...")
-            self.model = WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=6)
-            log("faster-whisper tiny loaded successfully!")
+            log("Initializing faster-whisper (base, int8, CPU)...")
+            self.model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=6)
+            log("faster-whisper base loaded successfully!")
             return
         except Exception as e:
-            log(f"faster-whisper tiny notice: {e}")
+            log(f"faster-whisper base notice: {e}")
 
         try:
             from faster_whisper import WhisperModel
-            self.model = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=6)
-            log("faster-whisper small loaded!")
+            self.model = WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=6)
+            log("faster-whisper tiny loaded!")
         except Exception as e:
-            log(f"faster-whisper small error: {e}")
+            log(f"faster-whisper tiny error: {e}")
 
     def _worker_loop(self):
         self._init_local_model()
@@ -212,9 +212,10 @@ class LocalStreamingTranscriber:
     def _process_stream(self, buffer):
         segments, info = self.model.transcribe(
             buffer,
-            vad_filter=True,
+            vad_filter=False,
             beam_size=1,
             temperature=0.0,
+            initial_prompt="Dictate pro live speech to text dictation in English or Hindi.",
             condition_on_previous_text=False
         )
         
