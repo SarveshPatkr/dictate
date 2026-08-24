@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Local Whisper Transcriber - 100% Offline Speech-to-Text
-Processes audio locally on CPU using INT8 quantization with faster-whisper.
+Uses faster-whisper 'small' model with INT8 quantization on CPU.
+High accuracy for English & Hindi with minimal RAM footprint (~600MB max).
 """
 
 import sys
 import os
-import time
 
 def main():
     if len(sys.argv) < 2:
@@ -20,24 +20,23 @@ def main():
 
     try:
         from faster_whisper import WhisperModel
-        # Use base or small with int8 for ultra-fast local decoding on CPU
-        model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=8)
+        model = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=8)
         
         segments, info = model.transcribe(
             audio_path,
             beam_size=1,
             temperature=0.0,
-            initial_prompt="Dictate pro speech to text transcription in English or Hindi.",
+            initial_prompt="Dictate pro speech transcription in English or Hindi.",
             condition_on_previous_text=False
         )
         
         text = " ".join(s.text.strip() for s in segments if s.text.strip()).strip()
         print(text)
     except Exception as e:
-        # Fallback to tiny if base fails
+        # Fallback to base model if memory or execution issue occurs
         try:
             from faster_whisper import WhisperModel
-            model = WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=6)
+            model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=6)
             segments, info = model.transcribe(audio_path, beam_size=1)
             text = " ".join(s.text.strip() for s in segments if s.text.strip()).strip()
             print(text)

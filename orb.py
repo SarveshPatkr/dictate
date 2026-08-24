@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-Dictate Pro - Real-Time Local Streaming Dictation with Live Subtitle Box
-- Top Element: Floating glassmorphic Live Subtitle Box with Pango multi-language typography (Hindi Devanagari & English), breathing live indicator, auto-scrolling, and streaming text cursor.
-- Bottom Element: Floating 3-element triad:
-  - Left: Cancel [ ✕ ] button (discards recording immediately)
-  - Center: Horizontal rounded Waveform Pill with live audio reactivity
-  - Right: Confirm [ ✓ ] button (stops recording, copies text to clipboard via wl-copy)
-- Real-time local speech recognition worker streaming text directly into UI as you speak.
+Dictate Pro - 3-Element Floating Triad (Distraction-Free Offline Voice Interface)
+- Left Element: Cancel [ ✕ ] button (immediately discards recording)
+- Center Element: Horizontal rounded Waveform Pill with live audio reactivity & smooth loading animation
+- Right Element: Confirm [ ✓ ] button (stops recording and transcribes locally via small model)
+- Zero background transcription overhead during speech (100% lightweight & fast).
 """
 
 import sys
@@ -23,15 +21,12 @@ import numpy as np
 
 import gi
 gi.require_version('Gtk', '4.0')
-gi.require_version('Pango', '1.0')
-gi.require_version('PangoCairo', '1.0')
-from gi.repository import Gtk, Gdk, GLib, Pango, PangoCairo
+from gi.repository import Gtk, Gdk, GLib
 import cairo
 
 LOG_FILE = "/tmp/dictate_debug.log"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DICTATE_SCRIPT = os.path.join(SCRIPT_DIR, "dictate.sh")
-MODELS_DIR = os.path.join(SCRIPT_DIR, "models")
 
 def log(msg):
     """Log messages to a debug file for easier troubleshooting."""
@@ -62,12 +57,11 @@ def restore_c_stderr(old_stderr):
             pass
 
 class AudioMonitor:
-    """Analyzes microphone input via PyAudio callback to provide real-time volume, spectrum & raw samples."""
-    def __init__(self, on_samples_callback=None, num_bands=19):
+    """Analyzes microphone input via PyAudio callback to provide real-time volume and spectrum."""
+    def __init__(self, num_bands=19):
         self.num_bands = num_bands
         self.current_volume = 0.0
         self.band_levels = [0.0] * num_bands
-        self.on_samples_callback = on_samples_callback
         self.p = None
         self.stream = None
         self.window = np.hanning(512)
@@ -97,10 +91,6 @@ class AudioMonitor:
             if not in_data:
                 return (None, pyaudio.paContinue)
             samples = np.frombuffer(in_data, dtype=np.int16).astype(np.float32) / 32768.0
-            
-            # Feed samples to streaming transcription worker
-            if self.on_samples_callback:
-                self.on_samples_callback(samples)
             
             # Compute RMS Volume
             rms = float(np.sqrt(np.mean(samples ** 2)))
@@ -152,119 +142,28 @@ class AudioMonitor:
         except Exception as e:
             log(f"Audio cleanup exception: {e}")
 
-class LocalStreamingTranscriber:
-    """Fast incremental real-time speech recognition."""
-    def __init__(self, on_text_update):
-        self.on_text_update = on_text_update
-        self.running = True
-        self.audio_chunks = []
-        self.lock = threading.Lock()
-        self.model = None
-        self.last_emitted_text = ""
-        
-        self.thread = threading.Thread(target=self._worker_loop, daemon=True)
-        self.thread.start()
-
-    def add_samples(self, samples_np):
-        with self.lock:
-            self.audio_chunks.append(samples_np)
-
-    def _init_local_model(self):
-        """Loads faster-whisper model for responsive live streaming."""
-        try:
-            from faster_whisper import WhisperModel
-            log("Initializing faster-whisper (base, int8, CPU)...")
-            self.model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=6)
-            log("faster-whisper base loaded successfully!")
-            return
-        except Exception as e:
-            log(f"faster-whisper base notice: {e}")
-
-        try:
-            from faster_whisper import WhisperModel
-            self.model = WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=6)
-            log("faster-whisper tiny loaded!")
-        except Exception as e:
-            log(f"faster-whisper tiny error: {e}")
-
-    def _worker_loop(self):
-        self._init_local_model()
-        buffer = np.array([], dtype=np.float32)
-        last_process_time = time.time()
-        
-        while self.running:
-            time.sleep(0.18)
-            with self.lock:
-                if self.audio_chunks:
-                    new_audio = np.concatenate(self.audio_chunks)
-                    self.audio_chunks.clear()
-                    buffer = np.concatenate([buffer, new_audio])
-            
-            # Need at least 0.5s of audio and 0.35s elapsed since last decode
-            if len(buffer) >= 16000 * 0.5 and (time.time() - last_process_time) >= 0.35:
-                last_process_time = time.time()
-                if self.model:
-                    try:
-                        self._process_stream(buffer)
-                    except Exception as e:
-                        log(f"Streaming decode error: {e}")
-
-    def _process_stream(self, buffer):
-        segments, info = self.model.transcribe(
-            buffer,
-            vad_filter=False,
-            beam_size=1,
-            temperature=0.0,
-            initial_prompt="Dictate pro live speech to text dictation in English or Hindi.",
-            condition_on_previous_text=False
-        )
-        
-        seg_list = list(segments)
-        if not seg_list:
-            return
-
-        detected_parts = [s.text.strip() for s in seg_list if s.text.strip()]
-        if not detected_parts:
-            return
-            
-        full_display = " ".join(detected_parts).strip()
-        if full_display and full_display != self.last_emitted_text:
-            self.last_emitted_text = full_display
-            log(f"Live transcription: {full_display}")
-            GLib.idle_add(self.on_text_update, full_display)
-
-    def stop(self):
-        self.running = False
-
 class RecordingOrb(Gtk.ApplicationWindow):
-    """Floating UI with Live Subtitle Box + 3-Element Floating Triad ([ ✕ ] [ Waveform Pill ] [ ✓ ])"""
+    """Floating UI with 3-Element Triad: [ ✕ ] [ Waveform Pill ] [ ✓ ]"""
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Pro")
         
         # Window canvas size
-        self.win_w = 460
-        self.win_h = 184
+        self.win_w = 340
+        self.win_h = 70
         
-        # Subtitle Box Geometry
-        self.box_w = 420.0
-        self.box_h = 88.0
-        self.box_r = 16.0
-        self.box_x = (self.win_w - self.box_w) / 2.0 # 20.0
-        self.box_y = 12.0
-        
-        # Triad Geometry (Below Subtitle Box)
-        self.triad_cy = 142.0
+        # Triad Geometry
+        self.triad_cy = 35.0
         self.pill_w = 210.0
         self.pill_h = 46.0
         self.pill_r = 23.0
-        self.pill_x = (self.win_w - self.pill_w) / 2.0 # 125.0
-        self.pill_y = self.triad_cy - self.pill_h / 2.0 # 119.0
+        self.pill_x = (self.win_w - self.pill_w) / 2.0 # 65.0
+        self.pill_y = (self.win_h - self.pill_h) / 2.0 # 12.0
         
         self.btn_r = 20.0 # 40px diameter buttons
         self.btn_gap = 12.0
-        self.cx_cancel = self.pill_x - self.btn_gap - self.btn_r # 93.0
-        self.cx_confirm = self.pill_x + self.pill_w + self.btn_gap + self.btn_r # 367.0
+        self.cx_cancel = self.pill_x - self.btn_gap - self.btn_r # 33.0
+        self.cx_confirm = self.pill_x + self.pill_w + self.btn_gap + self.btn_r # 307.0
         
         self.set_default_size(self.win_w, self.win_h)
         self.set_decorated(False)
@@ -275,7 +174,6 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.start_time = time.time()
         self.time_sec = 0.0
         
-        self.streamed_text = ""
         self.vol_smooth = 0.0
         self.entrance_scale = 0.0
         self.num_bars = 19
@@ -295,12 +193,8 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.loading_progress = 0.0
         self.load_transition = 0.0
         
-        # Initialize streaming transcriber and audio monitor
-        self.transcriber = LocalStreamingTranscriber(on_text_update=self.on_live_text_received)
-        self.monitor = AudioMonitor(
-            on_samples_callback=self.transcriber.add_samples,
-            num_bands=self.num_bars
-        )
+        # Audio Monitor
+        self.monitor = AudioMonitor(num_bands=self.num_bars)
         
         self.randomize_parameters()
         self.setup_ui()
@@ -308,11 +202,6 @@ class RecordingOrb(Gtk.ApplicationWindow):
         # 60 FPS animation timer (16ms)
         GLib.timeout_add(16, self.on_animation_frame)
         GLib.timeout_add(2500, self.randomize_parameters)
-
-    def on_live_text_received(self, text):
-        """Called when local streaming transcriber recognizes new words."""
-        self.streamed_text = text
-        self.drawing_area.queue_draw()
 
     def setup_ui(self):
         """Sets up GTK4 DrawingArea with Cairo rendering and mouse interaction controllers."""
@@ -380,7 +269,6 @@ class RecordingOrb(Gtk.ApplicationWindow):
         if dist_cancel_sq <= hit_radius_sq:
             # User clicked Cancel [ ✕ ]
             log("Cancel button [X] clicked -> Aborting recording session.")
-            self.transcriber.stop()
             self.monitor.stop()
             os.system(f"bash {DICTATE_SCRIPT} --cancel &")
             self.get_application().quit()
@@ -400,7 +288,6 @@ class RecordingOrb(Gtk.ApplicationWindow):
         """Transitions overlay to loading state without re-triggering dictate.sh."""
         if self.state != 'loading':
             self.state = 'loading'
-            self.transcriber.stop()
             self.monitor.stop()
 
     def on_animation_frame(self):
@@ -471,7 +358,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
         cr.close_path()
 
     def draw_func(self, area, cr, width, height, user_data):
-        """Renders the Live Subtitle Box + 3-Element Floating Triad."""
+        """Renders the 3-Element Floating Triad: [ ✕ ] [ Waveform Pill ] [ ✓ ]"""
         scale = self.entrance_scale
         if scale <= 0.01:
             return
@@ -479,108 +366,6 @@ class RecordingOrb(Gtk.ApplicationWindow):
         cx = width / 2.0
         cy = height / 2.0
 
-        # =========================================================================
-        # 1. TOP ELEMENT: FLOATING LIVE SUBTITLE BOX
-        # =========================================================================
-        bw = self.box_w * scale
-        bh = self.box_h * scale
-        br = self.box_r * scale
-        bx = cx - bw / 2.0
-        by = self.box_y
-
-        # Drop Shadow
-        self._draw_pill_path(cr, bx, by + 3.0, bw, bh, br)
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.40)
-        cr.fill()
-
-        # Dark Glass Container Body
-        self._draw_pill_path(cr, bx, by, bw, bh, br)
-        bg_box = cairo.LinearGradient(bx, by, bx, by + bh)
-        bg_box.add_color_stop_rgba(0.0, 0.08, 0.09, 0.13, 0.96)
-        bg_box.add_color_stop_rgba(1.0, 0.03, 0.04, 0.07, 0.98)
-        cr.set_source(bg_box)
-        cr.fill()
-
-        # Luminous Rim
-        self._draw_pill_path(cr, bx + 0.75, by + 0.75, bw - 1.5, bh - 1.5, br - 0.75)
-        rim_box = cairo.LinearGradient(bx, by, bx + bw, by + bh)
-        rim_box.add_color_stop_rgba(0.0, 1.0, 1.0, 1.0, 0.18)
-        rim_box.add_color_stop_rgba(0.5, 0.0, 0.48, 1.0, 0.14)
-        rim_box.add_color_stop_rgba(1.0, 1.0, 1.0, 1.0, 0.06)
-        cr.set_line_width(1.3)
-        cr.set_source(rim_box)
-        cr.stroke()
-
-        # Subtitle Box Header: Breathing Dot + "LIVE DICTATION" + "LOCAL AI"
-        dot_phase = math.sin(self.time_sec * 4.0) * 0.5 + 0.5
-        dot_r = 3.5 * scale
-        dot_x = bx + 18.0 * scale
-        dot_y = by + 16.0 * scale
-
-        # Glowing green status dot
-        cr.arc(dot_x, dot_y, dot_r, 0, math.pi * 2)
-        cr.set_source_rgba(0.19, 0.82, 0.35, 0.75 + 0.25 * dot_phase)
-        cr.fill()
-
-        # Header Text using Pango
-        layout_hdr = PangoCairo.create_layout(cr)
-        font_desc_hdr = Pango.FontDescription("Inter, Roboto, Ubuntu, sans-serif 9")
-        layout_hdr.set_font_description(font_desc_hdr)
-        layout_hdr.set_text("LIVE DICTATION")
-        cr.move_to(dot_x + 8.0 * scale, dot_y - 6.0 * scale)
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.55)
-        PangoCairo.show_layout(cr, layout_hdr)
-
-        # Right Badge: "LOCAL AI · EN / HI"
-        layout_badge = PangoCairo.create_layout(cr)
-        font_desc_badge = Pango.FontDescription("Inter, Roboto, Ubuntu, sans-serif 8")
-        layout_badge.set_font_description(font_desc_badge)
-        layout_badge.set_text("LOCAL AI · EN/HI")
-        badge_w, badge_h = layout_badge.get_pixel_size()
-        badge_px = bx + bw - badge_w - 18.0 * scale
-        badge_py = by + 10.0 * scale
-        
-        self._draw_pill_path(cr, badge_px - 6.0, badge_py - 2.0, badge_w + 12.0, badge_h + 4.0, 6.0)
-        cr.set_source_rgba(255, 255, 255, 0.08)
-        cr.fill()
-        
-        cr.move_to(badge_px, badge_py)
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.65)
-        PangoCairo.show_layout(cr, layout_badge)
-
-        # Live Transcribed Text (Pango with Hindi & English support)
-        layout_text = PangoCairo.create_layout(cr)
-        font_desc_text = Pango.FontDescription("Inter, Roboto, Ubuntu, sans-serif 11")
-        layout_text.set_font_description(font_desc_text)
-        layout_text.set_width(Pango.units_from_double((bw - 36.0 * scale)))
-        layout_text.set_wrap(Pango.WrapMode.WORD_CHAR)
-
-        cursor_str = " |" if (int(self.time_sec * 2.5) % 2 == 0) else ""
-        if self.streamed_text:
-            display_text = self.streamed_text + cursor_str
-            layout_text.set_text(display_text)
-            cr.set_source_rgba(0.96, 0.96, 0.98, 0.96)
-        else:
-            placeholder = "Listening... speak in English or Hindi..." + cursor_str
-            layout_text.set_text(placeholder)
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.38)
-
-        # Clip inside the text box area so text never overflows
-        cr.save()
-        cr.rectangle(bx + 16.0 * scale, by + 30.0 * scale, bw - 32.0 * scale, bh - 36.0 * scale)
-        cr.clip()
-
-        text_w, text_h = layout_text.get_pixel_size()
-        avail_h = bh - 38.0 * scale
-        y_offset = (avail_h - text_h) if text_h > avail_h else 0.0
-
-        cr.move_to(bx + 18.0 * scale, by + 34.0 * scale + y_offset)
-        PangoCairo.show_layout(cr, layout_text)
-        cr.restore()
-
-        # =========================================================================
-        # 2. BOTTOM ELEMENT: 3-ELEMENT FLOATING TRIAD
-        # =========================================================================
         pw = self.pill_w * scale
         ph = self.pill_h * scale
         pr = self.pill_r * scale
@@ -838,7 +623,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
 class OrbApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="com.openclaw.dictate.master.v6.orb")
+        super().__init__(application_id="com.openclaw.dictate.master.v7.triad")
         self.win = None
         
     def do_activate(self):
@@ -858,7 +643,6 @@ class OrbApp(Gtk.Application):
         """Triggered when transcription is done (closes overlay)."""
         log("Received SIGTERM -> closing overlay")
         if self.win:
-            self.win.transcriber.stop()
             self.win.monitor.stop()
         self.quit()
         return False
