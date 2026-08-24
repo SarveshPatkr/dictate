@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Dictate Pro - Real-Time Local Streaming Dictation with Live Subtitle Box
-- Top Element: Floating glassmorphic Live Subtitle Box with Pango multi-language typography (Hindi Devanagari & English), breathing live indicator, and streaming text cursor.
+- Top Element: Floating glassmorphic Live Subtitle Box with Pango multi-language typography (Hindi Devanagari & English), breathing live indicator, auto-scrolling, and streaming text cursor.
 - Bottom Element: Floating 3-element triad:
   - Left: Cancel [ ✕ ] button (discards recording immediately)
   - Center: Horizontal rounded Waveform Pill with live audio reactivity
   - Right: Confirm [ ✓ ] button (stops recording, copies text to clipboard via wl-copy)
-- Real-time local speech recognition worker streaming text with Silero VAD and stable prefix locking.
+- Real-time local speech recognition worker streaming text directly into UI as you speak.
 """
 
 import sys
@@ -153,17 +153,13 @@ class AudioMonitor:
             log(f"Audio cleanup exception: {e}")
 
 class LocalStreamingTranscriber:
-    """Stable incremental real-time speech recognition with VAD and confirmed prefix locking."""
+    """Fast incremental real-time speech recognition."""
     def __init__(self, on_text_update):
         self.on_text_update = on_text_update
         self.running = True
         self.audio_chunks = []
         self.lock = threading.Lock()
         self.model = None
-        
-        # State tracking for rock-solid stability
-        self.confirmed_text = ""
-        self.current_live_tail = ""
         self.last_emitted_text = ""
         
         self.thread = threading.Thread(target=self._worker_loop, daemon=True)
@@ -174,23 +170,22 @@ class LocalStreamingTranscriber:
             self.audio_chunks.append(samples_np)
 
     def _init_local_model(self):
-        """Loads faster-whisper model (small with INT8) for high-accuracy live streaming with Silero VAD."""
-        try:
-            from faster_whisper import WhisperModel
-            log("Initializing faster-whisper (small, int8, CPU)...")
-            self.model = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=8)
-            log("faster-whisper small loaded successfully with Silero VAD!")
-            return
-        except Exception as e:
-            log(f"faster-whisper small load notice: {e}")
-
+        """Loads faster-whisper model for responsive live streaming."""
         try:
             from faster_whisper import WhisperModel
             log("Initializing faster-whisper (tiny, int8, CPU)...")
             self.model = WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=6)
-            log("faster-whisper tiny loaded!")
+            log("faster-whisper tiny loaded successfully!")
+            return
         except Exception as e:
-            log(f"faster-whisper tiny load error: {e}")
+            log(f"faster-whisper tiny notice: {e}")
+
+        try:
+            from faster_whisper import WhisperModel
+            self.model = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=6)
+            log("faster-whisper small loaded!")
+        except Exception as e:
+            log(f"faster-whisper small error: {e}")
 
     def _worker_loop(self):
         self._init_local_model()
@@ -198,15 +193,15 @@ class LocalStreamingTranscriber:
         last_process_time = time.time()
         
         while self.running:
-            time.sleep(0.20)
+            time.sleep(0.18)
             with self.lock:
                 if self.audio_chunks:
                     new_audio = np.concatenate(self.audio_chunks)
                     self.audio_chunks.clear()
                     buffer = np.concatenate([buffer, new_audio])
             
-            # If buffer has at least 0.6s of audio and 0.4s elapsed since last decode
-            if len(buffer) >= 16000 * 0.6 and (time.time() - last_process_time) >= 0.4:
+            # Need at least 0.5s of audio and 0.35s elapsed since last decode
+            if len(buffer) >= 16000 * 0.5 and (time.time() - last_process_time) >= 0.35:
                 last_process_time = time.time()
                 if self.model:
                     try:
@@ -215,17 +210,11 @@ class LocalStreamingTranscriber:
                         log(f"Streaming decode error: {e}")
 
     def _process_stream(self, buffer):
-        dur = len(buffer) / 16000.0
-        
-        # Silero VAD filter eliminates non-speech audio (breathing, keyboard clicks, background noise)
         segments, info = self.model.transcribe(
             buffer,
             vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=400, speech_pad_ms=250),
             beam_size=1,
             temperature=0.0,
-            no_speech_threshold=0.6,
-            log_prob_threshold=-1.0,
             condition_on_previous_text=False
         )
         
@@ -240,6 +229,7 @@ class LocalStreamingTranscriber:
         full_display = " ".join(detected_parts).strip()
         if full_display and full_display != self.last_emitted_text:
             self.last_emitted_text = full_display
+            log(f"Live transcription: {full_display}")
             GLib.idle_add(self.on_text_update, full_display)
 
     def stop(self):
@@ -559,12 +549,10 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
         # Live Transcribed Text (Pango with Hindi & English support)
         layout_text = PangoCairo.create_layout(cr)
-        font_desc_text = Pango.FontDescription("Inter, Roboto, Ubuntu, sans-serif 12")
+        font_desc_text = Pango.FontDescription("Inter, Roboto, Ubuntu, sans-serif 11")
         layout_text.set_font_description(font_desc_text)
         layout_text.set_width(Pango.units_from_double((bw - 36.0 * scale)))
         layout_text.set_wrap(Pango.WrapMode.WORD_CHAR)
-        layout_text.set_ellipsize(Pango.EllipsizeMode.END)
-        layout_text.set_height(Pango.units_from_double(44.0 * scale))
 
         cursor_str = " |" if (int(self.time_sec * 2.5) % 2 == 0) else ""
         if self.streamed_text:
@@ -576,8 +564,18 @@ class RecordingOrb(Gtk.ApplicationWindow):
             layout_text.set_text(placeholder)
             cr.set_source_rgba(1.0, 1.0, 1.0, 0.38)
 
-        cr.move_to(bx + 18.0 * scale, by + 34.0 * scale)
+        # Clip inside the text box area so text never overflows
+        cr.save()
+        cr.rectangle(bx + 16.0 * scale, by + 30.0 * scale, bw - 32.0 * scale, bh - 36.0 * scale)
+        cr.clip()
+
+        text_w, text_h = layout_text.get_pixel_size()
+        avail_h = bh - 38.0 * scale
+        y_offset = (avail_h - text_h) if text_h > avail_h else 0.0
+
+        cr.move_to(bx + 18.0 * scale, by + 34.0 * scale + y_offset)
         PangoCairo.show_layout(cr, layout_text)
+        cr.restore()
 
         # =========================================================================
         # 2. BOTTOM ELEMENT: 3-ELEMENT FLOATING TRIAD
