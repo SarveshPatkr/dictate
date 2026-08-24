@@ -6,7 +6,7 @@ Dictate Pro - Real-Time Local Streaming Dictation with Live Subtitle Box
   - Left: Cancel [ ✕ ] button (discards recording immediately)
   - Center: Horizontal rounded Waveform Pill with live audio reactivity
   - Right: Confirm [ ✓ ] button (stops recording, copies text to clipboard via wl-copy)
-- Real-time local speech recognition worker streaming text directly into UI as you speak.
+- Real-time local speech recognition worker streaming text with Silero VAD and stable prefix locking.
 """
 
 import sys
@@ -153,14 +153,18 @@ class AudioMonitor:
             log(f"Audio cleanup exception: {e}")
 
 class LocalStreamingTranscriber:
-    """Background worker for incremental real-time local speech recognition."""
+    """Stable incremental real-time speech recognition with VAD and confirmed prefix locking."""
     def __init__(self, on_text_update):
         self.on_text_update = on_text_update
         self.running = True
         self.audio_chunks = []
         self.lock = threading.Lock()
         self.model = None
-        self.full_text = ""
+        
+        # State tracking for rock-solid stability
+        self.confirmed_text = ""
+        self.current_live_tail = ""
+        self.last_emitted_text = ""
         
         self.thread = threading.Thread(target=self._worker_loop, daemon=True)
         self.thread.start()
@@ -170,24 +174,23 @@ class LocalStreamingTranscriber:
             self.audio_chunks.append(samples_np)
 
     def _init_local_model(self):
-        """Loads faster-whisper model for real-time live streaming."""
+        """Loads faster-whisper model (small with INT8) for high-accuracy live streaming with Silero VAD."""
+        try:
+            from faster_whisper import WhisperModel
+            log("Initializing faster-whisper (small, int8, CPU)...")
+            self.model = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=8)
+            log("faster-whisper small loaded successfully with Silero VAD!")
+            return
+        except Exception as e:
+            log(f"faster-whisper small load notice: {e}")
+
         try:
             from faster_whisper import WhisperModel
             log("Initializing faster-whisper (tiny, int8, CPU)...")
             self.model = WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=6)
-            log("faster-whisper tiny loaded successfully for live streaming!")
-            return
+            log("faster-whisper tiny loaded!")
         except Exception as e:
-            log(f"faster-whisper tiny load notice: {e}")
-
-        try:
-            from faster_whisper import WhisperModel
-            log("Initializing faster-whisper (small, int8, CPU)...")
-            self.model = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=6)
-            log("faster-whisper small loaded!")
-            return
-        except Exception as e:
-            log(f"faster-whisper small load error: {e}")
+            log(f"faster-whisper tiny load error: {e}")
 
     def _worker_loop(self):
         self._init_local_model()
@@ -195,44 +198,78 @@ class LocalStreamingTranscriber:
         last_process_time = time.time()
         
         while self.running:
-            time.sleep(0.18)
+            time.sleep(0.20)
             with self.lock:
                 if self.audio_chunks:
                     new_audio = np.concatenate(self.audio_chunks)
                     self.audio_chunks.clear()
                     buffer = np.concatenate([buffer, new_audio])
             
-            # If buffer has at least 0.5s of audio and 0.35s passed since last decode
-            if len(buffer) >= 16000 * 0.5 and (time.time() - last_process_time) >= 0.35:
+            # If buffer has at least 0.6s of audio and 0.4s elapsed since last decode
+            if len(buffer) >= 16000 * 0.6 and (time.time() - last_process_time) >= 0.4:
                 last_process_time = time.time()
                 if self.model:
                     try:
-                        # Slice up to last 15s to keep streaming fast
-                        audio_slice = buffer[-16000 * 15:] if len(buffer) > 16000 * 15 else buffer
-                        # Check audio energy (avoid transcribing pure silence)
-                        rms = float(np.sqrt(np.mean(audio_slice[-16000:] ** 2))) if len(audio_slice) >= 16000 else float(np.sqrt(np.mean(audio_slice ** 2)))
-                        if rms > 0.008:
-                            self._transcribe_audio_buffer(audio_slice)
+                        self._process_stream(buffer)
                     except Exception as e:
                         log(f"Streaming decode error: {e}")
 
-    def _transcribe_audio_buffer(self, audio_data):
-        if not self.model:
+    def _process_stream(self, buffer):
+        dur = len(buffer) / 16000.0
+        
+        # Silero VAD filter eliminates non-speech audio (breathing, keyboard clicks, background noise)
+        segments, info = self.model.transcribe(
+            buffer,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=400, speech_pad_ms=250),
+            beam_size=1,
+            temperature=0.0,
+            no_speech_threshold=0.6,
+            logprob_threshold=-1.0,
+            condition_on_previous_text=False
+        )
+        
+        seg_list = list(segments)
+        if not seg_list:
+            # If silent, NEVER wipe out previous text! Keep confirmed text on screen.
             return
-        try:
-            segments, info = self.model.transcribe(
-                audio_data,
-                beam_size=1,
-                temperature=0.0,
-                language=None, # auto-detects Hindi, English, etc.
-                condition_on_previous_text=False
-            )
-            text_result = " ".join(s.text.strip() for s in segments if s.text.strip()).strip()
-            if text_result and text_result != self.full_text:
-                self.full_text = text_result
-                GLib.idle_add(self.on_text_update, text_result)
-        except Exception as e:
-            log(f"Transcribe error: {e}")
+
+        committed_parts = []
+        live_tail = ""
+        
+        for i, seg in enumerate(seg_list):
+            txt = seg.text.strip()
+            if not txt:
+                continue
+            # If segment is finished before current audio tail or not the last segment, lock it!
+            if i < len(seg_list) - 1 or (dur - seg.end) > 0.4:
+                committed_parts.append(txt)
+            else:
+                live_tail = txt
+        
+        if committed_parts:
+            new_confirmed = " ".join(committed_parts).strip()
+            if len(new_confirmed) >= len(self.confirmed_text):
+                self.confirmed_text = new_confirmed
+                
+        if live_tail and live_tail not in self.confirmed_text:
+            self.current_live_tail = live_tail
+        else:
+            self.current_live_tail = ""
+            
+        # Stable compound display string
+        if self.confirmed_text and self.current_live_tail:
+            full_display = f"{self.confirmed_text} {self.current_live_tail}".strip()
+        elif self.confirmed_text:
+            full_display = self.confirmed_text
+        elif self.current_live_tail:
+            full_display = self.current_live_tail
+        else:
+            return
+
+        if full_display != self.last_emitted_text:
+            self.last_emitted_text = full_display
+            GLib.idle_add(self.on_text_update, full_display)
 
     def stop(self):
         self.running = False
