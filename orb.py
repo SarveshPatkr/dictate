@@ -160,7 +160,6 @@ class LocalStreamingTranscriber:
         self.audio_chunks = []
         self.lock = threading.Lock()
         self.model = None
-        self.model_type = None # 'faster-whisper', 'transformers', or 'groq-fallback'
         self.full_text = ""
         
         self.thread = threading.Thread(target=self._worker_loop, daemon=True)
@@ -171,51 +170,24 @@ class LocalStreamingTranscriber:
             self.audio_chunks.append(samples_np)
 
     def _init_local_model(self):
-        """Loads local multi-lingual STT model (whisper-large-v3-turbo, faster-whisper, or transformers)."""
-        local_turbo_path = os.path.join(MODELS_DIR, "whisper-large-v3-turbo")
-        
-        # 1. Try local downloaded whisper-large-v3-turbo via Transformers pipeline
-        if os.path.exists(os.path.join(local_turbo_path, "model.safetensors")):
-            try:
-                import transformers
-                from transformers import pipeline
-                log(f"Loading local whisper-large-v3-turbo from {local_turbo_path}...")
-                self.model = pipeline(
-                    "automatic-speech-recognition",
-                    model=local_turbo_path,
-                    device="cpu"
-                )
-                self.model_type = "transformers"
-                log("Local whisper-large-v3-turbo loaded successfully!")
-                return
-            except Exception as e:
-                log(f"Local whisper-large-v3-turbo pipeline notice: {e}")
-
-        # 2. Try faster-whisper (CTranslate2)
+        """Loads faster-whisper model for real-time live streaming."""
         try:
             from faster_whisper import WhisperModel
-            log("Initializing local faster-whisper model (int8, CPU)...")
-            self.model = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=6)
-            self.model_type = "faster-whisper"
-            log("faster-whisper model initialized successfully!")
+            log("Initializing faster-whisper (tiny, int8, CPU)...")
+            self.model = WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=6)
+            log("faster-whisper tiny loaded successfully for live streaming!")
             return
         except Exception as e:
-            log(f"faster-whisper notice: {e}")
+            log(f"faster-whisper tiny load notice: {e}")
 
-        # 3. Fallback to standard transformers pipeline
         try:
-            from transformers import pipeline
-            log("Initializing transformers Whisper small pipeline...")
-            self.model = pipeline(
-                "automatic-speech-recognition",
-                model="openai/whisper-small",
-                device="cpu"
-            )
-            self.model_type = "transformers"
-            log("transformers Whisper pipeline initialized!")
+            from faster_whisper import WhisperModel
+            log("Initializing faster-whisper (small, int8, CPU)...")
+            self.model = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=6)
+            log("faster-whisper small loaded!")
             return
         except Exception as e:
-            log(f"transformers notice: {e}")
+            log(f"faster-whisper small load error: {e}")
 
     def _worker_loop(self):
         self._init_local_model()
@@ -223,26 +195,31 @@ class LocalStreamingTranscriber:
         last_process_time = time.time()
         
         while self.running:
-            time.sleep(0.25)
+            time.sleep(0.18)
             with self.lock:
                 if self.audio_chunks:
                     new_audio = np.concatenate(self.audio_chunks)
                     self.audio_chunks.clear()
                     buffer = np.concatenate([buffer, new_audio])
             
-            # If buffer has at least 0.7s of audio and 0.5s passed since last decode
-            if len(buffer) >= 16000 * 0.7 and (time.time() - last_process_time) >= 0.5:
+            # If buffer has at least 0.5s of audio and 0.35s passed since last decode
+            if len(buffer) >= 16000 * 0.5 and (time.time() - last_process_time) >= 0.35:
                 last_process_time = time.time()
-                try:
-                    self._transcribe_audio_buffer(buffer)
-                except Exception as e:
-                    log(f"Streaming decode error: {e}")
+                if self.model:
+                    try:
+                        # Slice up to last 15s to keep streaming fast
+                        audio_slice = buffer[-16000 * 15:] if len(buffer) > 16000 * 15 else buffer
+                        # Check audio energy (avoid transcribing pure silence)
+                        rms = float(np.sqrt(np.mean(audio_slice[-16000:] ** 2))) if len(audio_slice) >= 16000 else float(np.sqrt(np.mean(audio_slice ** 2)))
+                        if rms > 0.008:
+                            self._transcribe_audio_buffer(audio_slice)
+                    except Exception as e:
+                        log(f"Streaming decode error: {e}")
 
     def _transcribe_audio_buffer(self, audio_data):
         if not self.model:
             return
-
-        if self.model_type == "faster-whisper":
+        try:
             segments, info = self.model.transcribe(
                 audio_data,
                 beam_size=1,
@@ -254,13 +231,8 @@ class LocalStreamingTranscriber:
             if text_result and text_result != self.full_text:
                 self.full_text = text_result
                 GLib.idle_add(self.on_text_update, text_result)
-
-        elif self.model_type == "transformers":
-            result = self.model(audio_data, generate_kwargs={"task": "transcribe"})
-            text_result = result.get("text", "").strip() if isinstance(result, dict) else str(result).strip()
-            if text_result and text_result != self.full_text:
-                self.full_text = text_result
-                GLib.idle_add(self.on_text_update, text_result)
+        except Exception as e:
+            log(f"Transcribe error: {e}")
 
     def stop(self):
         self.running = False
@@ -300,7 +272,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self.set_focusable(False)
         self.set_resizable(False)
         
-        self.state = 'recording' # 'recording', 'loading', 'copied'
+        self.state = 'recording' # 'recording', 'loading'
         self.start_time = time.time()
         self.time_sec = 0.0
         
@@ -417,27 +389,8 @@ class RecordingOrb(Gtk.ApplicationWindow):
             # User clicked Confirm [ ✓ ]
             if self.state == 'recording':
                 log("Confirm button [✓] clicked -> Submitting recording.")
-                self.finish_and_copy()
-
-    def finish_and_copy(self):
-        """Stops recording, copies text to clipboard via wl-copy, and closes."""
-        self.state = 'loading'
-        self.transcriber.stop()
-        self.monitor.stop()
-        
-        # If we have streamed local text, copy immediately
-        text_to_copy = self.streamed_text.strip()
-        if text_to_copy:
-            try:
-                proc = subprocess.Popen(["wl-copy"], stdin=subprocess.PIPE)
-                proc.communicate(input=text_to_copy.encode("utf-8"))
-                subprocess.Popen(["notify-send", "-t", "2000", "Dictate (Local)", "Copied to clipboard!"])
-                log(f"Local transcription copied: {text_to_copy}")
-            except Exception as e:
-                log(f"wl-copy error: {e}")
-        
-        # Trigger dictate.sh to perform API fallback/cleanup
-        os.system(f"bash {DICTATE_SCRIPT} &")
+                self.start_loading()
+                os.system(f"bash {DICTATE_SCRIPT} &")
 
     def randomize_parameters(self):
         # Calm, gentle ambient drift speed
@@ -445,9 +398,11 @@ class RecordingOrb(Gtk.ApplicationWindow):
         return True
 
     def start_loading(self):
-        """Transitions overlay to loading state while keeping pill visible."""
+        """Transitions overlay to loading state without re-triggering dictate.sh."""
         if self.state != 'loading':
-            self.finish_and_copy()
+            self.state = 'loading'
+            self.transcriber.stop()
+            self.monitor.stop()
 
     def on_animation_frame(self):
         """Main 60 FPS animation tick."""
@@ -586,7 +541,6 @@ class RecordingOrb(Gtk.ApplicationWindow):
         badge_px = bx + bw - badge_w - 18.0 * scale
         badge_py = by + 10.0 * scale
         
-        # Badge pill
         self._draw_pill_path(cr, badge_px - 6.0, badge_py - 2.0, badge_w + 12.0, badge_h + 4.0, 6.0)
         cr.set_source_rgba(255, 255, 255, 0.08)
         cr.fill()
@@ -887,7 +841,7 @@ class OrbApp(Gtk.Application):
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_sigterm)
         
     def on_sigusr1(self):
-        """Triggered when Space or Tick button is pressed (stops audio, switches to loading state)."""
+        """Triggered when Space or Confirm button is pressed (switches to loading state)."""
         log("Received SIGUSR1 -> switching to loading state")
         if self.win:
             GLib.idle_add(self.win.start_loading)
