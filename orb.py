@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Dictate Pro Overlay - 3-Element Floating Triad Edition
-- Left Element: Floating circular Cancel [ ✕ ] button (discards recording session).
-- Center Element: Floating horizontal rounded Waveform Pill with live voice reactivity & subtle ambient glow.
-- Right Element: Floating circular Confirm [ ✓ ] button (stops recording & sends for transcription).
-- All 3 elements visually separate and disconnected with distinct floating glassmorphic style.
+Dictate Pro - Real-Time Local Streaming Dictation with Live Subtitle Box
+- Top Element: Floating glassmorphic Live Subtitle Box with Pango multi-language typography (Hindi Devanagari & English), breathing live indicator, and streaming text cursor.
+- Bottom Element: Floating 3-element triad:
+  - Left: Cancel [ ✕ ] button (discards recording immediately)
+  - Center: Horizontal rounded Waveform Pill with live audio reactivity
+  - Right: Confirm [ ✓ ] button (stops recording, copies text to clipboard via wl-copy)
+- Real-time local speech recognition worker streaming text directly into UI as you speak.
 """
 
 import sys
@@ -16,16 +18,20 @@ import threading
 import time
 import random
 import ctypes
+import subprocess
 import numpy as np
 
 import gi
 gi.require_version('Gtk', '4.0')
-from gi.repository import Gtk, Gdk, GLib
+gi.require_version('Pango', '1.0')
+gi.require_version('PangoCairo', '1.0')
+from gi.repository import Gtk, Gdk, GLib, Pango, PangoCairo
 import cairo
 
 LOG_FILE = "/tmp/dictate_debug.log"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DICTATE_SCRIPT = os.path.join(SCRIPT_DIR, "dictate.sh")
+MODELS_DIR = os.path.join(SCRIPT_DIR, "models")
 
 def log(msg):
     """Log messages to a debug file for easier troubleshooting."""
@@ -56,11 +62,12 @@ def restore_c_stderr(old_stderr):
             pass
 
 class AudioMonitor:
-    """Analyzes microphone input via PyAudio callback to provide real-time volume & frequency bands."""
-    def __init__(self, num_bands=19):
+    """Analyzes microphone input via PyAudio callback to provide real-time volume, spectrum & raw samples."""
+    def __init__(self, on_samples_callback=None, num_bands=19):
         self.num_bands = num_bands
         self.current_volume = 0.0
         self.band_levels = [0.0] * num_bands
+        self.on_samples_callback = on_samples_callback
         self.p = None
         self.stream = None
         self.window = np.hanning(512)
@@ -90,6 +97,10 @@ class AudioMonitor:
             if not in_data:
                 return (None, pyaudio.paContinue)
             samples = np.frombuffer(in_data, dtype=np.int16).astype(np.float32) / 32768.0
+            
+            # Feed samples to streaming transcription worker
+            if self.on_samples_callback:
+                self.on_samples_callback(samples)
             
             # Compute RMS Volume
             rms = float(np.sqrt(np.mean(samples ** 2)))
@@ -141,32 +152,159 @@ class AudioMonitor:
         except Exception as e:
             log(f"Audio cleanup exception: {e}")
 
+class LocalStreamingTranscriber:
+    """Background worker for incremental real-time local speech recognition."""
+    def __init__(self, on_text_update):
+        self.on_text_update = on_text_update
+        self.running = True
+        self.audio_chunks = []
+        self.lock = threading.Lock()
+        self.model = None
+        self.model_type = None # 'faster-whisper', 'transformers', or 'groq-fallback'
+        self.full_text = ""
+        
+        self.thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self.thread.start()
+
+    def add_samples(self, samples_np):
+        with self.lock:
+            self.audio_chunks.append(samples_np)
+
+    def _init_local_model(self):
+        """Loads local multi-lingual STT model (whisper-large-v3-turbo, faster-whisper, or transformers)."""
+        local_turbo_path = os.path.join(MODELS_DIR, "whisper-large-v3-turbo")
+        
+        # 1. Try local downloaded whisper-large-v3-turbo via Transformers pipeline
+        if os.path.exists(os.path.join(local_turbo_path, "model.safetensors")):
+            try:
+                import transformers
+                from transformers import pipeline
+                log(f"Loading local whisper-large-v3-turbo from {local_turbo_path}...")
+                self.model = pipeline(
+                    "automatic-speech-recognition",
+                    model=local_turbo_path,
+                    device="cpu"
+                )
+                self.model_type = "transformers"
+                log("Local whisper-large-v3-turbo loaded successfully!")
+                return
+            except Exception as e:
+                log(f"Local whisper-large-v3-turbo pipeline notice: {e}")
+
+        # 2. Try faster-whisper (CTranslate2)
+        try:
+            from faster_whisper import WhisperModel
+            log("Initializing local faster-whisper model (int8, CPU)...")
+            self.model = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=6)
+            self.model_type = "faster-whisper"
+            log("faster-whisper model initialized successfully!")
+            return
+        except Exception as e:
+            log(f"faster-whisper notice: {e}")
+
+        # 3. Fallback to standard transformers pipeline
+        try:
+            from transformers import pipeline
+            log("Initializing transformers Whisper small pipeline...")
+            self.model = pipeline(
+                "automatic-speech-recognition",
+                model="openai/whisper-small",
+                device="cpu"
+            )
+            self.model_type = "transformers"
+            log("transformers Whisper pipeline initialized!")
+            return
+        except Exception as e:
+            log(f"transformers notice: {e}")
+
+    def _worker_loop(self):
+        self._init_local_model()
+        buffer = np.array([], dtype=np.float32)
+        last_process_time = time.time()
+        
+        while self.running:
+            time.sleep(0.25)
+            with self.lock:
+                if self.audio_chunks:
+                    new_audio = np.concatenate(self.audio_chunks)
+                    self.audio_chunks.clear()
+                    buffer = np.concatenate([buffer, new_audio])
+            
+            # If buffer has at least 0.7s of audio and 0.5s passed since last decode
+            if len(buffer) >= 16000 * 0.7 and (time.time() - last_process_time) >= 0.5:
+                last_process_time = time.time()
+                try:
+                    self._transcribe_audio_buffer(buffer)
+                except Exception as e:
+                    log(f"Streaming decode error: {e}")
+
+    def _transcribe_audio_buffer(self, audio_data):
+        if not self.model:
+            return
+
+        if self.model_type == "faster-whisper":
+            segments, info = self.model.transcribe(
+                audio_data,
+                beam_size=1,
+                temperature=0.0,
+                language=None, # auto-detects Hindi, English, etc.
+                condition_on_previous_text=False
+            )
+            text_result = " ".join(s.text.strip() for s in segments if s.text.strip()).strip()
+            if text_result and text_result != self.full_text:
+                self.full_text = text_result
+                GLib.idle_add(self.on_text_update, text_result)
+
+        elif self.model_type == "transformers":
+            result = self.model(audio_data, generate_kwargs={"task": "transcribe"})
+            text_result = result.get("text", "").strip() if isinstance(result, dict) else str(result).strip()
+            if text_result and text_result != self.full_text:
+                self.full_text = text_result
+                GLib.idle_add(self.on_text_update, text_result)
+
+    def stop(self):
+        self.running = False
+
 class RecordingOrb(Gtk.ApplicationWindow):
-    """3-Element Floating Triad overlay: [ ✕ ]  [ ~~~~ Waveform Pill ~~~~ ]  [ ✓ ]"""
+    """Floating UI with Live Subtitle Box + 3-Element Floating Triad ([ ✕ ] [ Waveform Pill ] [ ✓ ])"""
     def __init__(self, app):
         super().__init__(application=app)
         self.set_title("Dictate Pro")
         
-        # Window canvas size accommodating 3 separate floating elements
-        self.win_w = 360
-        self.win_h = 76
+        # Window canvas size
+        self.win_w = 460
+        self.win_h = 184
         
-        # Geometry of the 3 distinct elements
-        self.pill_w = 210
-        self.pill_h = 48
-        self.pill_r = 24.0
-        self.btn_r = 21.0 # 42px diameter circular buttons
-        self.btn_gap = 12.0 # gap between pill and buttons
+        # Subtitle Box Geometry
+        self.box_w = 420.0
+        self.box_h = 88.0
+        self.box_r = 16.0
+        self.box_x = (self.win_w - self.box_w) / 2.0 # 20.0
+        self.box_y = 12.0
+        
+        # Triad Geometry (Below Subtitle Box)
+        self.triad_cy = 142.0
+        self.pill_w = 210.0
+        self.pill_h = 46.0
+        self.pill_r = 23.0
+        self.pill_x = (self.win_w - self.pill_w) / 2.0 # 125.0
+        self.pill_y = self.triad_cy - self.pill_h / 2.0 # 119.0
+        
+        self.btn_r = 20.0 # 40px diameter buttons
+        self.btn_gap = 12.0
+        self.cx_cancel = self.pill_x - self.btn_gap - self.btn_r # 93.0
+        self.cx_confirm = self.pill_x + self.pill_w + self.btn_gap + self.btn_r # 367.0
         
         self.set_default_size(self.win_w, self.win_h)
         self.set_decorated(False)
         self.set_focusable(False)
         self.set_resizable(False)
         
-        self.state = 'recording' # 'recording' or 'loading'
+        self.state = 'recording' # 'recording', 'loading', 'copied'
         self.start_time = time.time()
         self.time_sec = 0.0
         
+        self.streamed_text = ""
         self.vol_smooth = 0.0
         self.entrance_scale = 0.0
         self.num_bars = 19
@@ -174,10 +312,8 @@ class RecordingOrb(Gtk.ApplicationWindow):
         
         # Hover and click states
         self.hover_btn = None # 'cancel', 'confirm', or None
-        self.cancel_hover_anim = 0.0 # 0.0 to 1.0
-        self.confirm_hover_anim = 0.0 # 0.0 to 1.0
-        self.cancel_press_anim = 0.0
-        self.confirm_press_anim = 0.0
+        self.cancel_hover_anim = 0.0
+        self.confirm_hover_anim = 0.0
         
         # Color angles for gentle ambient background drift
         self.angles = [random.randint(0, 360) for _ in range(5)]
@@ -186,15 +322,26 @@ class RecordingOrb(Gtk.ApplicationWindow):
         
         # Loading animation parameters
         self.loading_progress = 0.0
-        self.load_transition = 0.0 # 0.0 (recording) -> 1.0 (loading)
+        self.load_transition = 0.0
         
-        self.monitor = AudioMonitor(num_bands=self.num_bars)
+        # Initialize streaming transcriber and audio monitor
+        self.transcriber = LocalStreamingTranscriber(on_text_update=self.on_live_text_received)
+        self.monitor = AudioMonitor(
+            on_samples_callback=self.transcriber.add_samples,
+            num_bands=self.num_bars
+        )
+        
         self.randomize_parameters()
         self.setup_ui()
         
         # 60 FPS animation timer (16ms)
         GLib.timeout_add(16, self.on_animation_frame)
         GLib.timeout_add(2500, self.randomize_parameters)
+
+    def on_live_text_received(self, text):
+        """Called when local streaming transcriber recognizes new words."""
+        self.streamed_text = text
+        self.drawing_area.queue_draw()
 
     def setup_ui(self):
         """Sets up GTK4 DrawingArea with Cairo rendering and mouse interaction controllers."""
@@ -227,33 +374,11 @@ class RecordingOrb(Gtk.ApplicationWindow):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
-    def _get_element_bounds(self):
-        """Returns centers and coordinates for the 3 distinct elements."""
-        cx = self.win_w / 2.0
-        cy = self.win_h / 2.0
-        
-        # Center Pill
-        px = cx - self.pill_w / 2.0
-        py = cy - self.pill_h / 2.0
-        
-        # Left Cancel Button Center
-        cx_cancel = px - self.btn_gap - self.btn_r
-        cy_cancel = cy
-        
-        # Right Confirm Button Center
-        cx_confirm = px + self.pill_w + self.btn_gap + self.btn_r
-        cy_confirm = cy
-        
-        return cx, cy, px, py, cx_cancel, cy_cancel, cx_confirm, cy_confirm
-
     def on_mouse_motion(self, controller, x, y):
         """Tracks hover state over left Cancel button and right Confirm button."""
-        cx, cy, px, py, cx_cancel, cy_cancel, cx_confirm, cy_confirm = self._get_element_bounds()
-        
-        dist_cancel_sq = (x - cx_cancel) ** 2 + (y - cy_cancel) ** 2
-        dist_confirm_sq = (x - cx_confirm) ** 2 + (y - cy_confirm) ** 2
-        
-        hit_radius_sq = (self.btn_r + 4.0) ** 2
+        dist_cancel_sq = (x - self.cx_cancel) ** 2 + (y - self.triad_cy) ** 2
+        dist_confirm_sq = (x - self.cx_confirm) ** 2 + (y - self.triad_cy) ** 2
+        hit_radius_sq = (self.btn_r + 5.0) ** 2
         
         old_hover = self.hover_btn
         if dist_cancel_sq <= hit_radius_sq:
@@ -277,26 +402,42 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
     def on_mouse_pressed(self, gesture, n_press, x, y):
         """Handles clicks on Cancel [ ✕ ] and Confirm [ ✓ ] buttons."""
-        cx, cy, px, py, cx_cancel, cy_cancel, cx_confirm, cy_confirm = self._get_element_bounds()
-        
-        dist_cancel_sq = (x - cx_cancel) ** 2 + (y - cy_cancel) ** 2
-        dist_confirm_sq = (x - cx_confirm) ** 2 + (y - cy_confirm) ** 2
-        hit_radius_sq = (self.btn_r + 4.0) ** 2
+        dist_cancel_sq = (x - self.cx_cancel) ** 2 + (y - self.triad_cy) ** 2
+        dist_confirm_sq = (x - self.cx_confirm) ** 2 + (y - self.triad_cy) ** 2
+        hit_radius_sq = (self.btn_r + 5.0) ** 2
         
         if dist_cancel_sq <= hit_radius_sq:
             # User clicked Cancel [ ✕ ]
             log("Cancel button [X] clicked -> Aborting recording session.")
-            self.cancel_press_anim = 1.0
+            self.transcriber.stop()
             self.monitor.stop()
             os.system(f"bash {DICTATE_SCRIPT} --cancel &")
             self.get_application().quit()
         elif dist_confirm_sq <= hit_radius_sq:
             # User clicked Confirm [ ✓ ]
             if self.state == 'recording':
-                log("Confirm button [✓] clicked -> Submitting recording for transcription.")
-                self.confirm_press_anim = 1.0
-                self.start_loading()
-                os.system(f"bash {DICTATE_SCRIPT} &")
+                log("Confirm button [✓] clicked -> Submitting recording.")
+                self.finish_and_copy()
+
+    def finish_and_copy(self):
+        """Stops recording, copies text to clipboard via wl-copy, and closes."""
+        self.state = 'loading'
+        self.transcriber.stop()
+        self.monitor.stop()
+        
+        # If we have streamed local text, copy immediately
+        text_to_copy = self.streamed_text.strip()
+        if text_to_copy:
+            try:
+                proc = subprocess.Popen(["wl-copy"], stdin=subprocess.PIPE)
+                proc.communicate(input=text_to_copy.encode("utf-8"))
+                subprocess.Popen(["notify-send", "-t", "2000", "Dictate (Local)", "Copied to clipboard!"])
+                log(f"Local transcription copied: {text_to_copy}")
+            except Exception as e:
+                log(f"wl-copy error: {e}")
+        
+        # Trigger dictate.sh to perform API fallback/cleanup
+        os.system(f"bash {DICTATE_SCRIPT} &")
 
     def randomize_parameters(self):
         # Calm, gentle ambient drift speed
@@ -306,8 +447,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
     def start_loading(self):
         """Transitions overlay to loading state while keeping pill visible."""
         if self.state != 'loading':
-            self.state = 'loading'
-            self.monitor.stop()
+            self.finish_and_copy()
 
     def on_animation_frame(self):
         """Main 60 FPS animation tick."""
@@ -349,21 +489,16 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
         # Waveform physics
         for i in range(self.num_bars):
-            # Center bell curve weighting for symmetrical visual balance
             norm_idx = (i - (self.num_bars - 1) / 2.0) / ((self.num_bars - 1) / 2.0)
             center_weight = math.cos(norm_idx * (math.pi / 2.6))
             
-            # Idle subtle breathing motion
             idle_wave = 3.5 + 2.5 * math.sin(self.time_sec * 3.5 + i * 0.45)
-            
-            # Active voice spectrum
             b_energy = band_levels[i] if i < len(band_levels) else 0.0
             voice_target = (b_energy * 0.7 + self.vol_smooth * 0.5) * center_weight * 32.0
             
             target_h = max(idle_wave, 3.5 + voice_target)
-            target_h = min(target_h, 34.0)
+            target_h = min(target_h, 32.0)
             
-            # Fast attack, smooth decay
             if target_h > self.bar_heights[i]:
                 self.bar_heights[i] += (target_h - self.bar_heights[i]) * 0.45
             else:
@@ -382,7 +517,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
         cr.close_path()
 
     def draw_func(self, area, cr, width, height, user_data):
-        """Renders 3 distinct floating elements: [ ✕ ]  [ Waveform Pill ]  [ ✓ ]"""
+        """Renders the Live Subtitle Box + 3-Element Floating Triad."""
         scale = self.entrance_scale
         if scale <= 0.01:
             return
@@ -390,25 +525,117 @@ class RecordingOrb(Gtk.ApplicationWindow):
         cx = width / 2.0
         cy = height / 2.0
 
-        # Center Pill Dimensions
+        # =========================================================================
+        # 1. TOP ELEMENT: FLOATING LIVE SUBTITLE BOX
+        # =========================================================================
+        bw = self.box_w * scale
+        bh = self.box_h * scale
+        br = self.box_r * scale
+        bx = cx - bw / 2.0
+        by = self.box_y
+
+        # Drop Shadow
+        self._draw_pill_path(cr, bx, by + 3.0, bw, bh, br)
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.40)
+        cr.fill()
+
+        # Dark Glass Container Body
+        self._draw_pill_path(cr, bx, by, bw, bh, br)
+        bg_box = cairo.LinearGradient(bx, by, bx, by + bh)
+        bg_box.add_color_stop_rgba(0.0, 0.08, 0.09, 0.13, 0.96)
+        bg_box.add_color_stop_rgba(1.0, 0.03, 0.04, 0.07, 0.98)
+        cr.set_source(bg_box)
+        cr.fill()
+
+        # Luminous Rim
+        self._draw_pill_path(cr, bx + 0.75, by + 0.75, bw - 1.5, bh - 1.5, br - 0.75)
+        rim_box = cairo.LinearGradient(bx, by, bx + bw, by + bh)
+        rim_box.add_color_stop_rgba(0.0, 1.0, 1.0, 1.0, 0.18)
+        rim_box.add_color_stop_rgba(0.5, 0.0, 0.48, 1.0, 0.14)
+        rim_box.add_color_stop_rgba(1.0, 1.0, 1.0, 1.0, 0.06)
+        cr.set_line_width(1.3)
+        cr.set_source(rim_box)
+        cr.stroke()
+
+        # Subtitle Box Header: Breathing Dot + "LIVE DICTATION" + "LOCAL AI"
+        dot_phase = math.sin(self.time_sec * 4.0) * 0.5 + 0.5
+        dot_r = 3.5 * scale
+        dot_x = bx + 18.0 * scale
+        dot_y = by + 16.0 * scale
+
+        # Glowing green status dot
+        cr.arc(dot_x, dot_y, dot_r, 0, math.pi * 2)
+        cr.set_source_rgba(0.19, 0.82, 0.35, 0.75 + 0.25 * dot_phase)
+        cr.fill()
+
+        # Header Text using Pango
+        layout_hdr = PangoCairo.create_layout(cr)
+        font_desc_hdr = Pango.FontDescription("Inter, Roboto, Ubuntu, sans-serif 9")
+        layout_hdr.set_font_description(font_desc_hdr)
+        layout_hdr.set_text("LIVE DICTATION")
+        cr.move_to(dot_x + 8.0 * scale, dot_y - 6.0 * scale)
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.55)
+        PangoCairo.show_layout(cr, layout_hdr)
+
+        # Right Badge: "LOCAL AI · EN / HI"
+        layout_badge = PangoCairo.create_layout(cr)
+        font_desc_badge = Pango.FontDescription("Inter, Roboto, Ubuntu, sans-serif 8")
+        layout_badge.set_font_description(font_desc_badge)
+        layout_badge.set_text("LOCAL AI · EN/HI")
+        badge_w, badge_h = layout_badge.get_pixel_size()
+        badge_px = bx + bw - badge_w - 18.0 * scale
+        badge_py = by + 10.0 * scale
+        
+        # Badge pill
+        self._draw_pill_path(cr, badge_px - 6.0, badge_py - 2.0, badge_w + 12.0, badge_h + 4.0, 6.0)
+        cr.set_source_rgba(255, 255, 255, 0.08)
+        cr.fill()
+        
+        cr.move_to(badge_px, badge_py)
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.65)
+        PangoCairo.show_layout(cr, layout_badge)
+
+        # Live Transcribed Text (Pango with Hindi & English support)
+        layout_text = PangoCairo.create_layout(cr)
+        font_desc_text = Pango.FontDescription("Inter, Roboto, Ubuntu, sans-serif 12")
+        layout_text.set_font_description(font_desc_text)
+        layout_text.set_width(Pango.units_from_double((bw - 36.0 * scale)))
+        layout_text.set_wrap(Pango.WrapMode.WORD_CHAR)
+        layout_text.set_ellipsize(Pango.EllipsizeMode.END)
+        layout_text.set_height(Pango.units_from_double(44.0 * scale))
+
+        cursor_str = " |" if (int(self.time_sec * 2.5) % 2 == 0) else ""
+        if self.streamed_text:
+            display_text = self.streamed_text + cursor_str
+            layout_text.set_text(display_text)
+            cr.set_source_rgba(0.96, 0.96, 0.98, 0.96)
+        else:
+            placeholder = "Listening... speak in English or Hindi..." + cursor_str
+            layout_text.set_text(placeholder)
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.38)
+
+        cr.move_to(bx + 18.0 * scale, by + 34.0 * scale)
+        PangoCairo.show_layout(cr, layout_text)
+
+        # =========================================================================
+        # 2. BOTTOM ELEMENT: 3-ELEMENT FLOATING TRIAD
+        # =========================================================================
         pw = self.pill_w * scale
         ph = self.pill_h * scale
         pr = self.pill_r * scale
-        px = cx - pw / 2.0
-        py = cy - ph / 2.0
+        px = self.pill_x + (self.pill_w - pw) / 2.0
+        py = self.pill_y + (self.pill_h - ph) / 2.0
 
-        # Left & Right Button Centers
         btn_rad = self.btn_r * scale
-        gap = self.btn_gap * scale
-        cx_cancel = px - gap - btn_rad
-        cx_confirm = px + pw + gap + btn_rad
-        cy_btn = cy
+        cx_cancel = self.cx_cancel
+        cx_confirm = self.cx_confirm
+        cy_triad = self.triad_cy
 
-        # =========================================================================
-        # 1. ELEMENT 1 (LEFT): FLOATING CANCEL BUTTON [ ✕ ]
-        # =========================================================================
+        # -------------------------------------------------------------------------
+        # A. LEFT ELEMENT: Cancel Button [ ✕ ]
+        # -------------------------------------------------------------------------
         # Drop Shadow
-        cr.arc(cx_cancel, cy_btn + 2.5, btn_rad, 0, math.pi * 2)
+        cr.arc(cx_cancel, cy_triad + 2.5, btn_rad, 0, math.pi * 2)
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.35)
         cr.fill()
 
@@ -416,24 +643,24 @@ class RecordingOrb(Gtk.ApplicationWindow):
         c_hover = self.cancel_hover_anim
         if c_hover > 0.02:
             glow_r = btn_rad + 4.0 * scale
-            cr.arc(cx_cancel, cy_btn, glow_r, 0, math.pi * 2)
-            c_glow = cairo.RadialGradient(cx_cancel, cy_btn, btn_rad * 0.5, cx_cancel, cy_btn, glow_r)
+            cr.arc(cx_cancel, cy_triad, glow_r, 0, math.pi * 2)
+            c_glow = cairo.RadialGradient(cx_cancel, cy_triad, btn_rad * 0.5, cx_cancel, cy_triad, glow_r)
             c_glow.add_color_stop_rgba(0.0, 1.0, 0.27, 0.23, 0.35 * c_hover)
             c_glow.add_color_stop_rgba(1.0, 1.0, 0.27, 0.23, 0.0)
             cr.set_source(c_glow)
             cr.fill()
 
         # Button Body
-        cr.arc(cx_cancel, cy_btn, btn_rad, 0, math.pi * 2)
-        bg_cancel = cairo.LinearGradient(cx_cancel, cy_btn - btn_rad, cx_cancel, cy_btn + btn_rad)
+        cr.arc(cx_cancel, cy_triad, btn_rad, 0, math.pi * 2)
+        bg_cancel = cairo.LinearGradient(cx_cancel, cy_triad - btn_rad, cx_cancel, cy_triad + btn_rad)
         bg_cancel.add_color_stop_rgba(0.0, 0.08 + 0.10 * c_hover, 0.09, 0.12, 0.95)
         bg_cancel.add_color_stop_rgba(1.0, 0.04 + 0.08 * c_hover, 0.04, 0.06, 0.97)
         cr.set_source(bg_cancel)
         cr.fill()
 
         # Button Rim
-        cr.arc(cx_cancel, cy_btn, btn_rad - 0.75, 0, math.pi * 2)
-        rim_c = cairo.LinearGradient(cx_cancel, cy_btn - btn_rad, cx_cancel, cy_btn + btn_rad)
+        cr.arc(cx_cancel, cy_triad, btn_rad - 0.75, 0, math.pi * 2)
+        rim_c = cairo.LinearGradient(cx_cancel, cy_triad - btn_rad, cx_cancel, cy_triad + btn_rad)
         rim_c.add_color_stop_rgba(0.0, 1.0, 0.27 + 0.73 * (1.0 - c_hover), 0.23 + 0.77 * (1.0 - c_hover), 0.25 + 0.55 * c_hover)
         rim_c.add_color_stop_rgba(1.0, 1.0, 1.0, 1.0, 0.08)
         cr.set_line_width(1.3)
@@ -441,21 +668,20 @@ class RecordingOrb(Gtk.ApplicationWindow):
         cr.stroke()
 
         # Cancel Icon: Crisp [ ✕ ]
-        x_size = 5.5 * scale
+        x_size = 5.2 * scale
         cr.set_line_cap(cairo.LINE_CAP_ROUND)
         cr.set_line_width(2.2 * scale)
-        # Gradient icon stroke (reddish on hover)
-        cr.move_to(cx_cancel - x_size, cy_btn - x_size)
-        cr.line_to(cx_cancel + x_size, cy_btn + x_size)
-        cr.move_to(cx_cancel + x_size, cy_btn - x_size)
-        cr.line_to(cx_cancel - x_size, cy_btn + x_size)
+        cr.move_to(cx_cancel - x_size, cy_triad - x_size)
+        cr.line_to(cx_cancel + x_size, cy_triad + x_size)
+        cr.move_to(cx_cancel + x_size, cy_triad - x_size)
+        cr.line_to(cx_cancel - x_size, cy_triad + x_size)
         cr.set_source_rgba(1.0, 0.30 + 0.70 * (1.0 - c_hover), 0.25 + 0.75 * (1.0 - c_hover), 0.85 + 0.15 * c_hover)
         cr.stroke()
 
-        # =========================================================================
-        # 2. ELEMENT 2 (CENTER): FLOATING WAVEFORM PILL
-        # =========================================================================
-        # Pill Drop Shadow
+        # -------------------------------------------------------------------------
+        # B. CENTER ELEMENT: Waveform Pill
+        # -------------------------------------------------------------------------
+        # Drop Shadow
         self._draw_pill_path(cr, px, py + 2.8, pw, ph, pr)
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.35)
         cr.fill()
@@ -472,7 +698,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
             cr.set_source(glow_grad)
             cr.fill()
 
-        # Pill Container Dark Body
+        # Pill Body
         self._draw_pill_path(cr, px, py, pw, ph, pr)
         bg_grad = cairo.LinearGradient(px, py, px, py + ph)
         bg_grad.add_color_stop_rgba(0.0, 0.07, 0.08, 0.12, 0.95)
@@ -480,7 +706,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
         cr.set_source(bg_grad)
         cr.fill()
 
-        # Ambient Rotating Plasma Swirl Inside Pill
+        # Plasma Background Inside Pill
         cr.save()
         self._draw_pill_path(cr, px, py, pw, ph, pr)
         cr.clip()
@@ -488,10 +714,9 @@ class RecordingOrb(Gtk.ApplicationWindow):
         swirl_rad = pw * 0.75
         plasma_alpha = 0.08 + (self.vol_smooth * 0.06) if self.state == 'recording' else 0.09
         
-        # Swirl Layers (Calm drift)
         rad1 = math.radians(self.angles[0])
         x1 = cx + math.cos(rad1) * (pw * 0.35)
-        y1 = cy + math.sin(rad1) * (ph * 0.4)
+        y1 = cy_triad + math.sin(rad1) * (ph * 0.4)
         grad1 = cairo.RadialGradient(x1, y1, 0, x1, y1, swirl_rad)
         grad1.add_color_stop_rgba(0.0, 1.0, 0.23, 0.19, plasma_alpha * 0.75)
         grad1.add_color_stop_rgba(0.7, 1.0, 0.23, 0.19, 0.0)
@@ -500,7 +725,7 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
         rad2 = math.radians(self.angles[1])
         x2 = cx + math.cos(rad2) * (pw * 0.35)
-        y2 = cy + math.sin(rad2) * (ph * 0.4)
+        y2 = cy_triad + math.sin(rad2) * (ph * 0.4)
         grad2 = cairo.RadialGradient(x2, y2, 0, x2, y2, swirl_rad)
         grad2.add_color_stop_rgba(0.0, 0.68, 0.32, 0.87, plasma_alpha * 0.85)
         grad2.add_color_stop_rgba(0.7, 0.68, 0.32, 0.87, 0.0)
@@ -509,17 +734,15 @@ class RecordingOrb(Gtk.ApplicationWindow):
 
         rad3 = math.radians(self.angles[2])
         x3 = cx + math.cos(rad3) * (pw * 0.35)
-        y3 = cy + math.sin(rad3) * (ph * 0.4)
+        y3 = cy_triad + math.sin(rad3) * (ph * 0.4)
         grad3 = cairo.RadialGradient(x3, y3, 0, x3, y3, swirl_rad)
         grad3.add_color_stop_rgba(0.0, 0.0, 0.48, 1.0, plasma_alpha * 0.90)
         grad3.add_color_stop_rgba(0.7, 0.0, 0.48, 1.0, 0.0)
         cr.set_source(grad3)
         cr.paint()
 
-        # Waveform OR Loading Animation Inside Pill
+        # Waveform Content
         trans = self.load_transition
-
-        # Active Waveform
         if trans < 0.99:
             wave_alpha = (1.0 - trans)
             bar_w = 3.2 * scale
@@ -531,14 +754,14 @@ class RecordingOrb(Gtk.ApplicationWindow):
             cr.set_line_width(bar_w)
 
             for i in range(self.num_bars):
-                bx = start_x + i * bar_spacing
-                bh = self.bar_heights[i] * scale * (1.0 - trans)
-                if bh < 3.0 * scale:
-                    bh = 3.0 * scale
+                bx_bar = start_x + i * bar_spacing
+                bh_bar = self.bar_heights[i] * scale * (1.0 - trans)
+                if bh_bar < 3.0 * scale:
+                    bh_bar = 3.0 * scale
 
-                y_top = cy - bh / 2.0
-                y_bot = cy + bh / 2.0
-                bar_grad = cairo.LinearGradient(bx, y_top, bx, y_bot)
+                y_top = cy_triad - bh_bar / 2.0
+                y_bot = cy_triad + bh_bar / 2.0
+                bar_grad = cairo.LinearGradient(bx_bar, y_top, bx_bar, y_bot)
                 
                 norm_pos = i / float(self.num_bars - 1)
                 r = 0.2 + 0.8 * norm_pos
@@ -549,12 +772,12 @@ class RecordingOrb(Gtk.ApplicationWindow):
                 bar_grad.add_color_stop_rgba(0.2, r, g, b, 0.90 * wave_alpha)
                 bar_grad.add_color_stop_rgba(1.0, 0.0, 0.48, 1.0, 0.85 * wave_alpha)
 
-                cr.move_to(bx, y_top)
-                cr.line_to(bx, y_bot)
+                cr.move_to(bx_bar, y_top)
+                cr.line_to(bx_bar, y_bot)
                 cr.set_source(bar_grad)
                 cr.stroke()
 
-        # Loading Animation (Harmonic Flowing Wave)
+        # Loading Animation in Pill
         if trans > 0.01:
             load_alpha = trans
             num_load_dots = 7
@@ -565,12 +788,12 @@ class RecordingOrb(Gtk.ApplicationWindow):
             for d in range(num_load_dots):
                 dx = load_start_x + d * load_spacing
                 phase = self.loading_progress * 4.0 - d * 0.6
-                dy_offset = math.sin(phase) * (6.0 * scale)
-                dot_size = (3.2 + 1.8 * math.cos(phase)) * scale
+                dy_offset = math.sin(phase) * (5.5 * scale)
+                dot_size = (3.0 + 1.8 * math.cos(phase)) * scale
                 if dot_size < 1.8 * scale:
                     dot_size = 1.8 * scale
 
-                dot_y = cy + dy_offset
+                dot_y = cy_triad + dy_offset
                 dot_grad = cairo.RadialGradient(dx, dot_y, 0, dx, dot_y, dot_size * 2.0)
                 
                 c_idx = (d / float(num_load_dots))
@@ -592,9 +815,9 @@ class RecordingOrb(Gtk.ApplicationWindow):
         self._draw_pill_path(cr, px + 0.75, py + 0.75, pw - 1.5, ph - 1.5, pr - 0.75)
         rim_rad = math.radians(self.angles[4])
         rim_x1 = cx + math.cos(rim_rad) * (pw / 2.0)
-        rim_y1 = cy + math.sin(rim_rad) * (ph / 2.0)
+        rim_y1 = cy_triad + math.sin(rim_rad) * (ph / 2.0)
         rim_x2 = cx - math.cos(rim_rad) * (pw / 2.0)
-        rim_y2 = cy - math.sin(rim_rad) * (ph / 2.0)
+        rim_y2 = cy_triad - math.sin(rim_rad) * (ph / 2.0)
         
         rim_grad = cairo.LinearGradient(rim_x1, rim_y1, rim_x2, rim_y2)
         rim_grad.add_color_stop_rgba(0.0, 1.0, 1.0, 1.0, 0.35)
@@ -606,11 +829,11 @@ class RecordingOrb(Gtk.ApplicationWindow):
         cr.set_source(rim_grad)
         cr.stroke()
 
-        # =========================================================================
-        # 3. ELEMENT 3 (RIGHT): FLOATING CONFIRM BUTTON [ ✓ ]
-        # =========================================================================
+        # -------------------------------------------------------------------------
+        # C. RIGHT ELEMENT: Confirm Button [ ✓ ]
+        # -------------------------------------------------------------------------
         # Drop Shadow
-        cr.arc(cx_confirm, cy_btn + 2.5, btn_rad, 0, math.pi * 2)
+        cr.arc(cx_confirm, cy_triad + 2.5, btn_rad, 0, math.pi * 2)
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.35)
         cr.fill()
 
@@ -618,24 +841,24 @@ class RecordingOrb(Gtk.ApplicationWindow):
         cf_hover = self.confirm_hover_anim
         if cf_hover > 0.02:
             glow_r = btn_rad + 4.0 * scale
-            cr.arc(cx_confirm, cy_btn, glow_r, 0, math.pi * 2)
-            cf_glow = cairo.RadialGradient(cx_confirm, cy_btn, btn_rad * 0.5, cx_confirm, cy_btn, glow_r)
+            cr.arc(cx_confirm, cy_triad, glow_r, 0, math.pi * 2)
+            cf_glow = cairo.RadialGradient(cx_confirm, cy_triad, btn_rad * 0.5, cx_confirm, cy_triad, glow_r)
             cf_glow.add_color_stop_rgba(0.0, 0.19, 0.82, 0.35, 0.35 * cf_hover)
             cf_glow.add_color_stop_rgba(1.0, 0.19, 0.82, 0.35, 0.0)
             cr.set_source(cf_glow)
             cr.fill()
 
         # Button Body
-        cr.arc(cx_confirm, cy_btn, btn_rad, 0, math.pi * 2)
-        bg_confirm = cairo.LinearGradient(cx_confirm, cy_btn - btn_rad, cx_confirm, cy_btn + btn_rad)
+        cr.arc(cx_confirm, cy_triad, btn_rad, 0, math.pi * 2)
+        bg_confirm = cairo.LinearGradient(cx_confirm, cy_triad - btn_rad, cx_confirm, cy_triad + btn_rad)
         bg_confirm.add_color_stop_rgba(0.0, 0.08, 0.10 + 0.08 * cf_hover, 0.09, 0.95)
         bg_confirm.add_color_stop_rgba(1.0, 0.04, 0.06 + 0.06 * cf_hover, 0.04, 0.97)
         cr.set_source(bg_confirm)
         cr.fill()
 
         # Button Rim
-        cr.arc(cx_confirm, cy_btn, btn_rad - 0.75, 0, math.pi * 2)
-        rim_cf = cairo.LinearGradient(cx_confirm, cy_btn - btn_rad, cx_confirm, cy_btn + btn_rad)
+        cr.arc(cx_confirm, cy_triad, btn_rad - 0.75, 0, math.pi * 2)
+        rim_cf = cairo.LinearGradient(cx_confirm, cy_triad - btn_rad, cx_confirm, cy_triad + btn_rad)
         rim_cf.add_color_stop_rgba(0.0, 0.19 + 0.81 * (1.0 - cf_hover), 0.82 + 0.18 * (1.0 - cf_hover), 0.35 + 0.65 * (1.0 - cf_hover), 0.25 + 0.55 * cf_hover)
         rim_cf.add_color_stop_rgba(1.0, 1.0, 1.0, 1.0, 0.08)
         cr.set_line_width(1.3)
@@ -646,12 +869,9 @@ class RecordingOrb(Gtk.ApplicationWindow):
         cr.set_line_cap(cairo.LINE_CAP_ROUND)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
         cr.set_line_width(2.4 * scale)
-        
-        # Checkmark geometry
-        cr.move_to(cx_confirm - 5.5 * scale, cy_btn + 0.5 * scale)
-        cr.line_to(cx_confirm - 1.5 * scale, cy_btn + 4.5 * scale)
-        cr.line_to(cx_confirm + 5.5 * scale, cy_btn - 3.5 * scale)
-        
+        cr.move_to(cx_confirm - 5.5 * scale, cy_triad + 0.5 * scale)
+        cr.line_to(cx_confirm - 1.5 * scale, cy_triad + 4.5 * scale)
+        cr.line_to(cx_confirm + 5.5 * scale, cy_triad - 3.5 * scale)
         cr.set_source_rgba(0.20 + 0.80 * (1.0 - cf_hover), 0.85 + 0.15 * (1.0 - cf_hover), 0.38 + 0.62 * (1.0 - cf_hover), 0.85 + 0.15 * cf_hover)
         cr.stroke()
 
@@ -677,6 +897,7 @@ class OrbApp(Gtk.Application):
         """Triggered when transcription is done (closes overlay)."""
         log("Received SIGTERM -> closing overlay")
         if self.win:
+            self.win.transcriber.stop()
             self.win.monitor.stop()
         self.quit()
         return False
