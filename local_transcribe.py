@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
 Local Whisper Transcriber - GPU Hardware Accelerated (AMD Radeon RX 5500M VRAM via Vulkan)
-Blazing fast (<2s), ~487MB VRAM, zero system RAM pressure.
+Blazing fast (~1.5s), ~487MB VRAM, zero system RAM pressure.
 """
 
 import sys
 import os
 import subprocess
-import re
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BIN_PATH = os.path.join(SCRIPT_DIR, "bin", "whisper-cli")
@@ -25,8 +24,9 @@ def transcribe_gpu(audio_path):
         "--device", "1", # Dedicated AMD Radeon RX 5500M GPU
         "--threads", "6",
         "--language", "auto",
-        "--no-timestamps",
-        "--prompt", "Dictate pro speech transcription in English or Hindi."
+        "--beam-size", "1",
+        "--suppress-nst",
+        "--no-timestamps"
     ]
 
     try:
@@ -35,11 +35,10 @@ def transcribe_gpu(audio_path):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=30
+            timeout=25
         )
         if res.returncode == 0:
             lines = res.stdout.strip().split('\n')
-            # Extract transcript lines (exclude ggml/whisper info lines)
             clean_lines = []
             for line in lines:
                 l = line.strip()
@@ -57,7 +56,7 @@ def transcribe_cpu_fallback(audio_path):
     try:
         from faster_whisper import WhisperModel
         model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=8)
-        segments, _ = model.transcribe(audio_path, beam_size=1)
+        segs, _ = model.transcribe(audio_path, beam_size=1)
         return " ".join(s.text.strip() for s in segments if s.text.strip()).strip()
     except Exception as e:
         print(f"CPU fallback error: {e}", file=sys.stderr)
@@ -77,7 +76,7 @@ def main():
     text = transcribe_gpu(audio_path)
     
     # 2. Fallback to CPU if needed
-    if text is None:
+    if text is None or not text:
         text = transcribe_cpu_fallback(audio_path)
 
     print(text or "")
