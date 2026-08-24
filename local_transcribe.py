@@ -10,7 +10,7 @@ import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BIN_PATH = os.path.join(SCRIPT_DIR, "bin", "whisper-cli")
-MODEL_PATH = os.path.join(SCRIPT_DIR, "models", "ggml-small.bin")
+MODEL_PATH = os.path.join(SCRIPT_DIR, "models", "ggml-large-v3-turbo-q5_0.bin")
 
 def transcribe_gpu(audio_path):
     """Runs whisper-cli with Vulkan acceleration on AMD Radeon RX 5500M (Device 1)."""
