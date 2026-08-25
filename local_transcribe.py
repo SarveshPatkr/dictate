@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Local Whisper Transcriber - GPU Hardware Accelerated (AMD Radeon RX 5500M VRAM via Vulkan)
-Engineered for marathon dictations (1 minute to 30+ minutes) with zero truncation.
+Engineered for marathon dictations (1 minute to 30+ minutes) with zero truncation and anti-hallucination.
 """
 
 import sys
@@ -25,7 +25,6 @@ def transcribe_gpu(audio_path):
         "--threads", "6",
         "--language", "auto",
         "--beam-size", "1",
-        "--no-fallback",
         "--suppress-nst",
         "--no-timestamps",
         "--split-on-word",
@@ -33,7 +32,7 @@ def transcribe_gpu(audio_path):
     ]
 
     try:
-        # No timeout restriction (allows unlimited 10-30+ minute recordings)
+        # Unlimited timeout for marathon recordings
         res = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
