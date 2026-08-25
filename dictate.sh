@@ -1,9 +1,12 @@
 #!/bin/bash
 # Dictate Pro - 100% Local Offline Dictation
+# Optimized for long-form voice prompts (1 to 30+ minutes)
 # Control: Super+T to Start, Space or Confirm [✓] to Stop.
 
 # 1. Environment & Configuration
 SCRIPT_DIR="$(dirname "$0")"
+HISTORY_DIR="$SCRIPT_DIR/history"
+mkdir -p "$HISTORY_DIR"
 
 # Constants
 LOCK_FILE="/tmp/dictate_recording.pid"
@@ -46,6 +49,7 @@ if [ -f "$LOCK_FILE" ]; then
     REC_PID=$(cat "$LOCK_FILE")
     kill -TERM "$REC_PID" 2>/dev/null
     wait "$REC_PID" 2>/dev/null
+    sync
     rm -f "$LOCK_FILE"
     
     # Stop Space Listener
@@ -63,11 +67,19 @@ if [ -f "$LOCK_FILE" ]; then
     [ -f "$GUI_FILE" ] && kill -TERM "$(cat "$GUI_FILE")" 2>/dev/null && rm -f "$GUI_FILE"
 
     if [ -n "$TEXT" ]; then
+        # Copy to system clipboard
         echo -n "$TEXT" | wl-copy
-        notify-send -t 2000 "Dictate (100% Local)" "Copied to clipboard!"
+        
+        # Save to history archive
+        TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
+        echo "$TEXT" > "$HISTORY_DIR/latest.txt"
+        echo "$TEXT" > "$HISTORY_DIR/${TIMESTAMP}.txt"
+        
+        notify-send -t 2500 "Dictate Complete" "Copied to clipboard!"
         log "Success: Local transcription complete ($TEXT)."
     else
         log "Notice: No speech detected in audio."
+        notify-send -t 2000 "Dictate" "No speech detected."
     fi
 
 else
