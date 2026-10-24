@@ -19,6 +19,10 @@ import ctypes
 import subprocess
 import numpy as np
 
+# Ensure X11/XWayland backend so window positioning at the bottom works reliably
+if "GDK_BACKEND" not in os.environ:
+    os.environ["GDK_BACKEND"] = "x11"
+
 import gi
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk, Gdk, GLib
@@ -621,6 +625,44 @@ class RecordingOrb(Gtk.ApplicationWindow):
         cr.set_source_rgba(0.20 + 0.80 * (1.0 - cf_hover), 0.85 + 0.15 * (1.0 - cf_hover), 0.38 + 0.62 * (1.0 - cf_hover), 0.85 + 0.15 * cf_hover)
         cr.stroke()
 
+    def move_to_bottom(self):
+        """Positions the floating triad popup at the bottom center of the screen."""
+        try:
+            display = Gdk.Display.get_default()
+            monitors = display.get_monitors() if display else None
+            screen_w, screen_h = 1920, 1080
+            if monitors and monitors.get_n_items() > 0:
+                m = monitors.get_item(0)
+                if m:
+                    geom = m.get_geometry()
+                    screen_w, screen_h = geom.width, geom.height
+
+            target_x = max(0, (screen_w - int(self.win_w)) // 2)
+            target_y = max(0, screen_h - int(self.win_h) - 45)
+
+            def _move():
+                for delay in (0.02, 0.06, 0.12, 0.25):
+                    time.sleep(delay)
+                    try:
+                        res = subprocess.run(
+                            ["xdotool", "search", "--name", "Dictate Pro"],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        wids = res.stdout.strip().split()
+                        if wids:
+                            wid = wids[-1]
+                            subprocess.run(
+                                ["xdotool", "windowmove", wid, str(target_x), str(target_y)],
+                                capture_output=True, timeout=2
+                            )
+                            break
+                    except Exception:
+                        pass
+
+            threading.Thread(target=_move, daemon=True).start()
+        except Exception as e:
+            log(f"Positioning error: {e}")
+
 class OrbApp(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="com.openclaw.dictate.master.v7.triad")
@@ -629,6 +671,7 @@ class OrbApp(Gtk.Application):
     def do_activate(self):
         self.win = RecordingOrb(self)
         self.win.present()
+        self.win.move_to_bottom()
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, self.on_sigusr1)
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_sigterm)
         

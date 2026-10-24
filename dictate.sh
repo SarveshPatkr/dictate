@@ -105,7 +105,7 @@ else
     echo $! > "$LOCK_FILE"
     
     # Start Orb UI
-    nohup python3 "$SCRIPT_DIR/orb.py" >> "$DEBUG_LOG" 2>&1 &
+    GDK_BACKEND=x11 nohup python3 "$SCRIPT_DIR/orb.py" >> "$DEBUG_LOG" 2>&1 &
     echo $! > "$GUI_FILE"
     
     # Start Space Listener
