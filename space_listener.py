@@ -5,8 +5,9 @@ import time
 from evdev import InputDevice, categorize, ecodes
 
 # This script listens for the SPACE key and triggers the stop sequence
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DICTATE_SCRIPT = os.path.join(SCRIPT_DIR, "dictate.sh")
 LOCK_FILE = "/tmp/dictate_recording.pid"
-DICTATE_SCRIPT = "/home/spatkar/Desktop/dictate/dictate.sh"
 LOG_FILE = "/tmp/dictate_debug.log"
 
 def log(msg):
