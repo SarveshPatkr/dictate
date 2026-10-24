@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Dictate Pro - 3-Element Floating Triad (Distraction-Free Offline Voice Interface)
+Dictate Pro - 3-Element Floating Triad (Distraction-Free Voice Interface)
 - Left Element: Cancel [ ✕ ] button (immediately discards recording)
 - Center Element: Horizontal rounded Waveform Pill with live audio reactivity & smooth loading animation
-- Right Element: Confirm [ ✓ ] button (stops recording and transcribes locally via small model)
+- Right Element: Confirm [ ✓ ] button (stops recording and submits audio to Groq Whisper)
 - Zero background transcription overhead during speech (100% lightweight & fast).
 """
 

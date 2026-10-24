@@ -1,0 +1,5 @@
+{
+  "groq_model": "whisper-large-v3-turbo",
+  "language": "auto",
+  "temperature": 0.0
+}
